@@ -3,9 +3,13 @@ import { PrismaService } from '../prisma/prisma.service';
 import { ReadinessService } from '../readiness/readiness.service';
 import { UpstashRedisCacheService } from '../cache/upstash-redis-cache.service';
 import {
+  STARTUP_DATA_ROOM_DOCUMENT_TYPES,
+  StartupDataRoomDocumentType,
+  StartupDataRoomDocumentView,
   StartupPostView,
   StartupProfileView,
   StartupReadinessView,
+  UpsertStartupDataRoomDocumentInput,
   UpdateStartupPostInput,
   UpdateStartupProfileInput,
 } from './startups.types';
@@ -14,6 +18,10 @@ type StartupMembershipContext = {
   orgId: string;
   memberRole: string;
 };
+
+const STARTUP_DATA_ROOM_DOCUMENT_TYPE_SET = new Set<StartupDataRoomDocumentType>(
+  STARTUP_DATA_ROOM_DOCUMENT_TYPES,
+);
 
 @Injectable()
 export class StartupsService {
@@ -75,6 +83,42 @@ export class StartupsService {
           .filter((item) => item.length > 0),
       ),
     );
+  }
+
+  private normalizeUuid(value: string | null | undefined): string | null {
+    const normalized = this.normalizeOptionalText(value);
+    if (!normalized) {
+      return null;
+    }
+
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      normalized,
+    )
+      ? normalized
+      : null;
+  }
+
+  private normalizeStartupDataRoomDocumentType(
+    value: string | null | undefined,
+  ): StartupDataRoomDocumentType | null {
+    const normalized = this.normalizeOptionalText(value)?.toLowerCase();
+    if (
+      normalized
+      && STARTUP_DATA_ROOM_DOCUMENT_TYPE_SET.has(normalized as StartupDataRoomDocumentType)
+    ) {
+      return normalized as StartupDataRoomDocumentType;
+    }
+
+    return null;
+  }
+
+  private isValidHttpUrl(value: string): boolean {
+    try {
+      const parsed = new URL(value);
+      return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+    } catch {
+      return false;
+    }
   }
 
   private assertStartupEditorRole(memberRole: string, message: string): void {
@@ -151,6 +195,62 @@ export class StartupsService {
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown cache invalidation error';
       this.logger.warn(`Failed to invalidate workspace caches: ${message}`);
+    }
+  }
+
+  private async assertDataRoomDocumentsAvailableForPlan(
+    orgId: string,
+    documentType: StartupDataRoomDocumentType,
+  ): Promise<void> {
+    const featureRows = await this.prisma.$queryRaw<
+      Array<{
+        limit_value: number | string | null;
+        is_unlimited: boolean;
+      }>
+    >`
+      select
+        pf.limit_value,
+        pf.is_unlimited
+      from public.org_current_subscription_plan_v1 cp
+      join public.billing_plan_features pf on pf.plan_id = cp.plan_id
+      where cp.org_id = ${orgId}::uuid
+        and pf.feature_key = 'data_room_documents_limit'
+      limit 1
+    `;
+
+    const feature = featureRows[0];
+    if (!feature) {
+      throw new Error('Data room documents are not included in your current plan.');
+    }
+
+    if (feature.is_unlimited === true) {
+      return;
+    }
+
+    const limit = Math.max(0, this.normalizeNullableInteger(feature.limit_value) ?? 0);
+    if (limit < 1) {
+      throw new Error('Data room documents are not enabled for your current plan.');
+    }
+
+    const existingRows = await this.prisma.$queryRaw<Array<{ id: string }>>`
+      select d.id
+      from public.startup_data_room_documents d
+      where d.startup_org_id = ${orgId}::uuid
+        and d.document_type = ${documentType}::public.startup_data_room_document_type
+      limit 1
+    `;
+    if (existingRows[0]?.id) {
+      return;
+    }
+
+    const countRows = await this.prisma.$queryRaw<Array<{ document_count: number | string | null }>>`
+      select count(*)::integer as document_count
+      from public.startup_data_room_documents d
+      where d.startup_org_id = ${orgId}::uuid
+    `;
+    const documentCount = Math.max(0, this.normalizeNullableInteger(countRows[0]?.document_count) ?? 0);
+    if (documentCount >= limit) {
+      throw new Error('You have reached your plan limit for data room documents. Upgrade to add more.');
     }
   }
 
@@ -303,6 +403,195 @@ export class StartupsService {
       published_at: this.normalizeTimestamp(row.published_at),
       updated_at: this.normalizeTimestamp(row.updated_at) ?? new Date().toISOString(),
     };
+  }
+
+  async listStartupDataRoomDocuments(userId: string): Promise<StartupDataRoomDocumentView[]> {
+    const membership = await this.resolveStartupMembershipContext(userId);
+
+    const rows = await this.prisma.$queryRaw<
+      Array<{
+        id: string;
+        startup_org_id: string;
+        document_type: string | null;
+        title: string | null;
+        file_url: string | null;
+        file_name: string | null;
+        file_size_bytes: number | string | null;
+        content_type: string | null;
+        summary: string | null;
+        created_at: string | Date | null;
+        updated_at: string | Date | null;
+      }>
+    >`
+      select
+        d.id,
+        d.startup_org_id,
+        d.document_type::text as document_type,
+        d.title,
+        d.file_url,
+        d.file_name,
+        d.file_size_bytes,
+        d.content_type,
+        d.summary,
+        d.created_at,
+        d.updated_at
+      from public.startup_data_room_documents d
+      where d.startup_org_id = ${membership.orgId}::uuid
+      order by
+        case d.document_type
+          when 'pitch_deck'::public.startup_data_room_document_type then 1
+          when 'financial_model'::public.startup_data_room_document_type then 2
+          when 'cap_table'::public.startup_data_room_document_type then 3
+          when 'traction_metrics'::public.startup_data_room_document_type then 4
+          when 'legal_company_docs'::public.startup_data_room_document_type then 5
+          when 'incorporation_docs'::public.startup_data_room_document_type then 6
+          when 'customer_contracts_summaries'::public.startup_data_room_document_type then 7
+          when 'term_sheet_drafts'::public.startup_data_room_document_type then 8
+          else 999
+        end asc,
+        d.updated_at desc
+    `;
+
+    return rows
+      .map((row): StartupDataRoomDocumentView | null => {
+        const id = this.normalizeUuid(row.id);
+        const startupOrgId = this.normalizeUuid(row.startup_org_id);
+        const documentType = this.normalizeStartupDataRoomDocumentType(row.document_type);
+        const title = this.normalizeOptionalText(row.title);
+        const fileUrl = this.normalizeOptionalText(row.file_url);
+        const createdAt = this.normalizeTimestamp(row.created_at);
+        const updatedAt = this.normalizeTimestamp(row.updated_at);
+        if (
+          !id
+          || !startupOrgId
+          || !documentType
+          || !title
+          || !fileUrl
+          || !createdAt
+          || !updatedAt
+        ) {
+          return null;
+        }
+
+        return {
+          id,
+          startup_org_id: startupOrgId,
+          document_type: documentType,
+          title,
+          file_url: fileUrl,
+          file_name: this.normalizeOptionalText(row.file_name),
+          file_size_bytes: this.normalizeNullableInteger(row.file_size_bytes),
+          content_type: this.normalizeOptionalText(row.content_type),
+          summary: this.normalizeOptionalText(row.summary),
+          created_at: createdAt,
+          updated_at: updatedAt,
+        };
+      })
+      .filter((row): row is StartupDataRoomDocumentView => !!row);
+  }
+
+  async upsertStartupDataRoomDocument(
+    userId: string,
+    input: UpsertStartupDataRoomDocumentInput,
+  ): Promise<void> {
+    const membership = await this.resolveStartupMembershipContext(userId);
+    this.assertStartupEditorRole(
+      membership.memberRole,
+      'Only startup owner or admin can manage data room documents',
+    );
+
+    const documentType = this.normalizeStartupDataRoomDocumentType(input.documentType);
+    if (!documentType) {
+      throw new Error('Data room document type is invalid.');
+    }
+
+    const title = this.normalizeOptionalText(input.title);
+    if (!title || title.length < 2) {
+      throw new Error('Data room document title must be at least 2 characters.');
+    }
+
+    const fileUrl = this.normalizeOptionalText(input.fileUrl);
+    if (!fileUrl || !this.isValidHttpUrl(fileUrl)) {
+      throw new Error('Data room document URL must be a valid http/https link.');
+    }
+
+    const fileName = this.normalizeOptionalText(input.fileName);
+    const contentType = this.normalizeOptionalText(input.contentType);
+    const summary = this.normalizeOptionalText(input.summary);
+    const fileSizeBytes =
+      typeof input.fileSizeBytes === 'number'
+        ? Math.round(input.fileSizeBytes)
+        : null;
+    if (fileSizeBytes !== null && fileSizeBytes < 1) {
+      throw new Error('Data room document file size must be positive.');
+    }
+
+    await this.assertDataRoomDocumentsAvailableForPlan(membership.orgId, documentType);
+
+    await this.prisma.$queryRaw`
+      insert into public.startup_data_room_documents as d (
+        startup_org_id,
+        document_type,
+        title,
+        file_url,
+        file_name,
+        file_size_bytes,
+        content_type,
+        summary,
+        uploaded_by,
+        updated_at
+      )
+      values (
+        ${membership.orgId}::uuid,
+        ${documentType}::public.startup_data_room_document_type,
+        ${title},
+        ${fileUrl},
+        ${fileName},
+        ${fileSizeBytes},
+        ${contentType},
+        ${summary},
+        ${userId}::uuid,
+        timezone('utc', now())
+      )
+      on conflict (startup_org_id, document_type) do update
+      set
+        title = excluded.title,
+        file_url = excluded.file_url,
+        file_name = excluded.file_name,
+        file_size_bytes = excluded.file_size_bytes,
+        content_type = excluded.content_type,
+        summary = excluded.summary,
+        uploaded_by = ${userId}::uuid,
+        updated_at = timezone('utc', now())
+    `;
+
+    await this.invalidateWorkspaceBootstrapForOrg(membership.orgId);
+  }
+
+  async deleteStartupDataRoomDocument(userId: string, documentId: string): Promise<void> {
+    const membership = await this.resolveStartupMembershipContext(userId);
+    this.assertStartupEditorRole(
+      membership.memberRole,
+      'Only startup owner or admin can manage data room documents',
+    );
+
+    const normalizedDocumentId = this.normalizeUuid(documentId);
+    if (!normalizedDocumentId) {
+      throw new Error('Data room document id is invalid.');
+    }
+
+    const rows = await this.prisma.$queryRaw<Array<{ id: string }>>`
+      delete from public.startup_data_room_documents d
+      where d.id = ${normalizedDocumentId}::uuid
+        and d.startup_org_id = ${membership.orgId}::uuid
+      returning d.id
+    `;
+
+    if (!rows[0]?.id) {
+      throw new Error('Data room document was not found.');
+    }
+
+    await this.invalidateWorkspaceBootstrapForOrg(membership.orgId);
   }
 
   async updateStartupProfile(userId: string, input: UpdateStartupProfileInput): Promise<void> {

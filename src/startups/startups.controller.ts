@@ -1,11 +1,13 @@
-import { Body, Controller, Get, Patch, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
 import { AuthenticatedUser } from '../auth-integration/auth-integration.service';
 import { SupabaseJwtGuard } from '../auth-integration/supabase-jwt.guard';
 import {
+  StartupDataRoomDocumentView,
   StartupMutationResult,
   StartupPostView,
   StartupProfileView,
   StartupReadinessView,
+  UpsertStartupDataRoomDocumentInput,
   UpdateStartupPostInput,
   UpdateStartupProfileInput,
 } from './startups.types';
@@ -68,6 +70,22 @@ export class StartupsController {
     }
   }
 
+  @Get('data-room/documents')
+  async getStartupDataRoomDocuments(
+    @Req() req: RequestWithUser,
+  ): Promise<StartupDataRoomDocumentView[]> {
+    const user = req.user;
+    if (!user) {
+      return [];
+    }
+
+    try {
+      return await this.startups.listStartupDataRoomDocuments(user.id);
+    } catch {
+      return [];
+    }
+  }
+
   @Patch('profile')
   async updateStartupProfile(
     @Req() req: RequestWithUser,
@@ -125,6 +143,64 @@ export class StartupsController {
         success: false,
         message,
         postId: null,
+      };
+    }
+  }
+
+  @Post('data-room/documents')
+  async upsertStartupDataRoomDocument(
+    @Req() req: RequestWithUser,
+    @Body() input: UpsertStartupDataRoomDocumentInput,
+  ): Promise<StartupMutationResult> {
+    const user = req.user;
+    if (!user) {
+      return {
+        success: false,
+        message: 'Unauthorized',
+      };
+    }
+
+    try {
+      await this.startups.upsertStartupDataRoomDocument(user.id, input);
+      return {
+        success: true,
+        message: 'Data room document saved.',
+      };
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Unable to save data room document right now.';
+      return {
+        success: false,
+        message,
+      };
+    }
+  }
+
+  @Delete('data-room/documents/:documentId')
+  async deleteStartupDataRoomDocument(
+    @Req() req: RequestWithUser,
+    @Param('documentId') documentId: string,
+  ): Promise<StartupMutationResult> {
+    const user = req.user;
+    if (!user) {
+      return {
+        success: false,
+        message: 'Unauthorized',
+      };
+    }
+
+    try {
+      await this.startups.deleteStartupDataRoomDocument(user.id, documentId);
+      return {
+        success: true,
+        message: 'Data room document removed.',
+      };
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Unable to remove data room document right now.';
+      return {
+        success: false,
+        message,
       };
     }
   }

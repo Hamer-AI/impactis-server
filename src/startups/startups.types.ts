@@ -20,6 +20,20 @@ export class StartupMutationResult {
   postId?: string | null;
 }
 
+export const STARTUP_DATA_ROOM_DOCUMENT_TYPES = [
+  'pitch_deck',
+  'financial_model',
+  'cap_table',
+  'traction_metrics',
+  'legal_company_docs',
+  'incorporation_docs',
+  'customer_contracts_summaries',
+  'term_sheet_drafts',
+] as const;
+
+export type StartupDataRoomDocumentType =
+  (typeof STARTUP_DATA_ROOM_DOCUMENT_TYPES)[number];
+
 export type StartupReadinessView = {
   startup_org_id: string;
   has_startup_post: boolean;
@@ -76,6 +90,20 @@ export type StartupPostView = {
   industry_tags: string[];
   status: string;
   published_at: string | null;
+  updated_at: string;
+};
+
+export type StartupDataRoomDocumentView = {
+  id: string;
+  startup_org_id: string;
+  document_type: StartupDataRoomDocumentType;
+  title: string;
+  file_url: string;
+  file_name: string | null;
+  file_size_bytes: number | null;
+  content_type: string | null;
+  summary: string | null;
+  created_at: string;
   updated_at: string;
 };
 
@@ -212,4 +240,38 @@ export class UpdateStartupPostInput {
 
   @IsIn(['draft', 'published'])
   status!: string;
+}
+
+export class UpsertStartupDataRoomDocumentInput {
+  @IsIn(STARTUP_DATA_ROOM_DOCUMENT_TYPES)
+  documentType!: StartupDataRoomDocumentType;
+
+  @IsString()
+  @MinLength(2)
+  @MaxLength(160)
+  title!: string;
+
+  @IsUrl({ require_protocol: true })
+  fileUrl!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  fileName?: string | null;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(100 * 1024 * 1024)
+  fileSizeBytes?: number | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  contentType?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  summary?: string | null;
 }
