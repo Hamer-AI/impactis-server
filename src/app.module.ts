@@ -13,6 +13,7 @@ import { FilesModule } from './files/files.module';
 import { CacheModule } from './cache/cache.module';
 import { ConditionalGetEtagInterceptor } from './http/conditional-get-etag.interceptor';
 import { BillingModule } from './billing/billing.module';
+import { SessionsModule } from './sessions/sessions.module';
 
 @Module({
   imports: [
@@ -29,6 +30,7 @@ import { BillingModule } from './billing/billing.module';
     StartupsModule,
     FilesModule,
     BillingModule,
+    SessionsModule,
     CacheModule,
     HealthModule,
   ],
@@ -39,4 +41,4 @@ import { BillingModule } from './billing/billing.module';
     },
   ],
 })
-export class AppModule {}
+export class AppModule { }

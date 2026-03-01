@@ -13,7 +13,7 @@ export class AuthIntegrationService {
   constructor(
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
-  ) {}
+  ) { }
 
   async verifyAuthorizationHeader(authHeader?: string | null): Promise<AuthenticatedUser> {
     if (!authHeader?.startsWith('Bearer ')) {
@@ -74,10 +74,17 @@ export class AuthIntegrationService {
         throw new UnauthorizedException('Invalid or expired Supabase token');
       }
 
+      // If API verification succeeds, we know the token is valid.
+      // We can decode it to get session-specific claims like 'sid'.
+      const decoded = this.jwtService.decode(token) as Record<string, unknown> | null;
+
       return {
         id,
         email: typeof payload['email'] === 'string' ? payload['email'] : undefined,
-        raw: payload,
+        raw: {
+          ...payload,
+          ...(decoded || {}),
+        },
       };
     } catch {
       throw new UnauthorizedException('Invalid or expired Supabase token');
