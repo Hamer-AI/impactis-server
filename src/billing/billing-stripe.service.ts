@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import Stripe from 'stripe';
 import { UpstashRedisCacheService } from '../cache/upstash-redis-cache.service';
 import { PrismaService } from '../prisma/prisma.service';
 import {
@@ -31,37 +31,6 @@ type PlanPriceRow = {
   billing_interval: string | null;
 };
 
-type StripeCustomerResponse = {
-  id?: string;
-  [key: string]: unknown;
-};
-
-type StripeCheckoutSessionResponse = {
-  id?: string;
-  url?: string;
-  [key: string]: unknown;
-};
-
-type StripePortalSessionResponse = {
-  id?: string;
-  url?: string;
-  [key: string]: unknown;
-};
-
-type StripeSubscriptionResponse = {
-  id?: string;
-  [key: string]: unknown;
-};
-
-type StripeEventPayload = {
-  id?: string;
-  type?: string;
-  livemode?: boolean;
-  data?: {
-    object?: unknown;
-  };
-};
-
 type StripeResolvedSubscriptionInput = {
   orgId: string;
   orgType: BillingSegment;
@@ -81,6 +50,7 @@ type StripeResolvedSubscriptionInput = {
 @Injectable()
 export class BillingStripeService {
   private readonly logger = new Logger(BillingStripeService.name);
+  private stripeClient: Stripe | null = null;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -308,43 +278,13 @@ export class BillingStripeService {
     return value;
   }
 
-  private async stripeRequest<T>(
-    path: string,
-    method: 'GET' | 'POST',
-    form?: URLSearchParams,
-  ): Promise<T> {
-    const secretKey = this.getStripeSecretKey();
-    const url = `https://api.stripe.com${path}`;
-    const response = await fetch(url, {
-      method,
-      headers: {
-        authorization: `Bearer ${secretKey}`,
-        ...(method === 'POST'
-          ? { 'content-type': 'application/x-www-form-urlencoded' }
-          : {}),
-      },
-      body: method === 'POST' ? (form?.toString() ?? '') : undefined,
-    });
-
-    const rawBody = await response.text();
-    let payload: Record<string, unknown> | null = null;
-    if (rawBody) {
-      try {
-        payload = JSON.parse(rawBody) as Record<string, unknown>;
-      } catch {
-        payload = null;
-      }
+  private getStripeClient(): Stripe {
+    if (this.stripeClient) {
+      return this.stripeClient;
     }
 
-    if (!response.ok) {
-      const stripeError = this.asRecord(payload?.error);
-      const message = this.normalizeOptionalText(
-        typeof stripeError?.message === 'string' ? stripeError.message : null,
-      ) ?? `Stripe request failed (${response.status})`;
-      throw new Error(message);
-    }
-
-    return (payload ?? {}) as T;
+    this.stripeClient = new Stripe(this.getStripeSecretKey());
+    return this.stripeClient;
   }
 
   private async resolveBillingMembershipContext(userId: string): Promise<BillingMembershipContext> {
@@ -535,17 +475,16 @@ export class BillingStripeService {
       return account.customerRef;
     }
 
-    const form = new URLSearchParams();
-    form.set('name', input.orgName);
-    if (account.billingEmail ?? input.userEmail) {
-      form.set('email', (account.billingEmail ?? input.userEmail)!);
-    }
-    form.set('metadata[org_id]', input.orgId);
-    form.set('metadata[org_type]', input.orgType);
-    form.set('metadata[app]', 'impactis');
-
-    const created = await this.stripeRequest<StripeCustomerResponse>('/v1/customers', 'POST', form);
-    const customerRef = this.normalizeOptionalText(typeof created.id === 'string' ? created.id : null);
+    const created = await this.getStripeClient().customers.create({
+      name: input.orgName,
+      email: account.billingEmail ?? input.userEmail ?? undefined,
+      metadata: {
+        org_id: input.orgId,
+        org_type: input.orgType,
+        app: 'impactis',
+      },
+    });
+    const customerRef = this.normalizeOptionalText(created.id);
     if (!customerRef) {
       throw new Error('Unable to provision Stripe customer');
     }
@@ -646,38 +585,47 @@ export class BillingStripeService {
       cancelUrl: input.checkout.cancelUrl,
     });
     const currency = this.normalizeOptionalText(selectedPlan.currency)?.toLowerCase() ?? 'usd';
-    const intervalForStripe = resolvedInterval === 'annual' ? 'year' : 'month';
+    const intervalForStripe: Stripe.PriceCreateParams.Recurring.Interval =
+      resolvedInterval === 'annual' ? 'year' : 'month';
 
-    const form = new URLSearchParams();
-    form.set('customer', stripeCustomerRef);
-    form.set('mode', 'subscription');
-    form.set('success_url', successUrl);
-    form.set('cancel_url', cancelUrl);
-    form.set('client_reference_id', membership.orgId);
-    form.set('allow_promotion_codes', 'true');
-    form.set('metadata[org_id]', membership.orgId);
-    form.set('metadata[org_type]', membership.orgType);
-    form.set('metadata[plan_code]', planCode);
-    form.set('metadata[billing_interval]', resolvedInterval);
-    form.set('subscription_data[metadata][org_id]', membership.orgId);
-    form.set('subscription_data[metadata][org_type]', membership.orgType);
-    form.set('subscription_data[metadata][plan_code]', planCode);
-    form.set('subscription_data[metadata][billing_interval]', resolvedInterval);
-    form.set('line_items[0][quantity]', '1');
-    form.set('line_items[0][price_data][currency]', currency);
-    form.set('line_items[0][price_data][unit_amount]', amountCents.toString());
-    form.set('line_items[0][price_data][recurring][interval]', intervalForStripe);
-    form.set(
-      'line_items[0][price_data][product_data][name]',
-      `Impactis ${selectedPlan.display_name} (${membership.orgType})`,
-    );
-
-    const session = await this.stripeRequest<StripeCheckoutSessionResponse>(
-      '/v1/checkout/sessions',
-      'POST',
-      form,
-    );
-    const checkoutUrl = this.normalizeOptionalText(typeof session.url === 'string' ? session.url : null);
+    const session = await this.getStripeClient().checkout.sessions.create({
+      customer: stripeCustomerRef,
+      mode: 'subscription',
+      success_url: successUrl,
+      cancel_url: cancelUrl,
+      client_reference_id: membership.orgId,
+      allow_promotion_codes: true,
+      metadata: {
+        org_id: membership.orgId,
+        org_type: membership.orgType,
+        plan_code: planCode,
+        billing_interval: resolvedInterval,
+      },
+      subscription_data: {
+        metadata: {
+          org_id: membership.orgId,
+          org_type: membership.orgType,
+          plan_code: planCode,
+          billing_interval: resolvedInterval,
+        },
+      },
+      line_items: [
+        {
+          quantity: 1,
+          price_data: {
+            currency,
+            unit_amount: amountCents,
+            recurring: {
+              interval: intervalForStripe,
+            },
+            product_data: {
+              name: `Impactis ${selectedPlan.display_name} (${membership.orgType})`,
+            },
+          },
+        },
+      ],
+    });
+    const checkoutUrl = this.normalizeOptionalText(session.url);
     if (!checkoutUrl) {
       throw new Error('Unable to start Stripe checkout session');
     }
@@ -695,16 +643,11 @@ export class BillingStripeService {
     customerRef: string;
     returnUrl: string;
   }): Promise<{ url: string }> {
-    const form = new URLSearchParams();
-    form.set('customer', input.customerRef);
-    form.set('return_url', input.returnUrl);
-
-    const session = await this.stripeRequest<StripePortalSessionResponse>(
-      '/v1/billing_portal/sessions',
-      'POST',
-      form,
-    );
-    const portalUrl = this.normalizeOptionalText(typeof session.url === 'string' ? session.url : null);
+    const session = await this.getStripeClient().billingPortal.sessions.create({
+      customer: input.customerRef,
+      return_url: input.returnUrl,
+    });
+    const portalUrl = this.normalizeOptionalText(session.url);
     if (!portalUrl) {
       throw new Error('Unable to create Stripe billing portal session');
     }
@@ -741,51 +684,6 @@ export class BillingStripeService {
     };
   }
 
-  private verifyStripeWebhookSignature(rawPayload: string, signatureHeader: string): void {
-    const webhookSecret = this.getStripeWebhookSecret();
-    const signatureParts = signatureHeader
-      .split(',')
-      .map((part) => part.trim())
-      .filter((part) => part.length > 0);
-
-    const timestampRaw = signatureParts
-      .find((part) => part.startsWith('t='))
-      ?.slice('t='.length) ?? null;
-    const signatures = signatureParts
-      .filter((part) => part.startsWith('v1='))
-      .map((part) => part.slice('v1='.length))
-      .filter((part) => part.length > 0);
-
-    const timestamp = timestampRaw ? Number.parseInt(timestampRaw, 10) : null;
-    if (!timestamp || signatures.length < 1) {
-      throw new Error('Stripe signature header is invalid');
-    }
-
-    const nowEpoch = Math.floor(Date.now() / 1000);
-    if (Math.abs(nowEpoch - timestamp) > 300) {
-      throw new Error('Stripe webhook signature timestamp is outside tolerance');
-    }
-
-    const payloadToSign = `${timestamp}.${rawPayload}`;
-    const expected = createHmac('sha256', webhookSecret)
-      .update(payloadToSign)
-      .digest('hex');
-    const expectedBuffer = Buffer.from(expected, 'utf8');
-
-    const isValid = signatures.some((signature) => {
-      const signatureBuffer = Buffer.from(signature, 'utf8');
-      if (signatureBuffer.length !== expectedBuffer.length) {
-        return false;
-      }
-
-      return timingSafeEqual(signatureBuffer, expectedBuffer);
-    });
-
-    if (!isValid) {
-      throw new Error('Stripe signature mismatch');
-    }
-  }
-
   async handleWebhook(input: {
     rawBody: Buffer;
     stripeSignature: string | null;
@@ -799,23 +697,17 @@ export class BillingStripeService {
     }
 
     const rawPayload = input.rawBody.toString('utf8');
+    let event: Stripe.Event;
     try {
-      this.verifyStripeWebhookSignature(rawPayload, stripeSignature);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Invalid webhook signature';
-      return {
-        received: false,
-        message,
-      };
-    }
-
-    let event: StripeEventPayload;
-    try {
-      event = JSON.parse(rawPayload) as StripeEventPayload;
+      event = this.getStripeClient().webhooks.constructEvent(
+        input.rawBody,
+        stripeSignature,
+        this.getStripeWebhookSecret(),
+      );
     } catch {
       return {
         received: false,
-        message: 'Invalid webhook payload',
+        message: 'Invalid webhook signature',
       };
     }
 
@@ -928,12 +820,10 @@ export class BillingStripeService {
     subscriptionRef: string,
     eventType: string,
   ): Promise<void> {
-    const encodedRef = encodeURIComponent(subscriptionRef);
-    const subscription = await this.stripeRequest<StripeSubscriptionResponse>(
-      `/v1/subscriptions/${encodedRef}?expand[]=items.data.price`,
-      'GET',
-    );
-    await this.applyStripeSubscriptionObject(subscription as Record<string, unknown>, eventType);
+    const subscription = await this.getStripeClient().subscriptions.retrieve(subscriptionRef, {
+      expand: ['items.data.price'],
+    });
+    await this.applyStripeSubscriptionObject(subscription as unknown as Record<string, unknown>, eventType);
   }
 
   private async resolveOrgIdByStripeCustomer(customerRef: string): Promise<string | null> {
