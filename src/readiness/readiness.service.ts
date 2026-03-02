@@ -135,7 +135,7 @@ export class ReadinessService {
         coalesce(sr.missing_steps, '{}'::text[]) as missing_steps
         ,
         coalesce(sr.section_scores, '[]'::jsonb) as section_scores
-      from public.startup_readiness_v2 sr
+      from public.startup_readiness sr
       where sr.org_id = ${orgId}::uuid
       limit 1
     `;

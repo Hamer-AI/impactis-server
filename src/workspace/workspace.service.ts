@@ -113,6 +113,7 @@ const WORKSPACE_SETTINGS_SECTIONS = [
 type WorkspaceSettingsSection = (typeof WORKSPACE_SETTINGS_SECTIONS)[number];
 
 const WORKSPACE_SETTINGS_SECTION_SET = new Set<WorkspaceSettingsSection>(WORKSPACE_SETTINGS_SECTIONS);
+const SUPABASE_PUBLIC_STORAGE_OBJECT_BASE_PATH = '/storage/v1/object/public';
 
 @Injectable()
 export class WorkspaceService {
@@ -134,6 +135,34 @@ export class WorkspaceService {
 
     const trimmed = value.trim();
     return trimmed.length > 0 ? trimmed : null;
+  }
+
+  private buildSupabasePublicStorageUrl(bucketId: string, objectPath: string): string | null {
+    const supabaseUrl = this.normalizeOptionalText(this.config.get<string>('supabaseUrl'));
+    if (!supabaseUrl) {
+      return null;
+    }
+
+    return `${supabaseUrl.replace(/\/+$/, '')}${SUPABASE_PUBLIC_STORAGE_OBJECT_BASE_PATH}/${bucketId}/${objectPath}`;
+  }
+
+  private resolveDocumentPublicUrl(
+    fileUrl: string | null | undefined,
+    storageBucket: string | null | undefined,
+    storageObjectPath: string | null | undefined,
+  ): string | null {
+    const normalizedFileUrl = this.normalizeOptionalText(fileUrl);
+    if (normalizedFileUrl) {
+      return normalizedFileUrl;
+    }
+
+    const bucketId = this.normalizeOptionalText(storageBucket);
+    const objectPath = this.normalizeOptionalText(storageObjectPath);
+    if (!bucketId || !objectPath) {
+      return null;
+    }
+
+    return this.buildSupabasePublicStorageUrl(bucketId, objectPath);
   }
 
   private normalizeInteger(value: unknown): number {
@@ -808,9 +837,12 @@ export class WorkspaceService {
         startup_org_id: string;
         website_url: string | null;
         pitch_deck_url: string | null;
+        pitch_deck_storage_bucket: string | null;
+        pitch_deck_storage_object_path: string | null;
         pitch_deck_media_kind: string | null;
         pitch_deck_file_name: string | null;
         pitch_deck_file_size_bytes: number | string | null;
+        pitch_deck_content_type: string | null;
         team_overview: string | null;
         company_stage: string | null;
         founding_year: number | string | null;
@@ -821,25 +853,40 @@ export class WorkspaceService {
         financial_summary: string | null;
         legal_summary: string | null;
         financial_doc_url: string | null;
+        financial_doc_storage_bucket: string | null;
+        financial_doc_storage_object_path: string | null;
         financial_doc_file_name: string | null;
         financial_doc_file_size_bytes: number | string | null;
+        financial_doc_content_type: string | null;
         legal_doc_url: string | null;
+        legal_doc_storage_bucket: string | null;
+        legal_doc_storage_object_path: string | null;
         legal_doc_file_name: string | null;
         legal_doc_file_size_bytes: number | string | null;
+        legal_doc_content_type: string | null;
         updated_at: string | Date | null;
       }>
     >`
       select
         o.id as startup_org_id,
         nullif(trim(coalesce(sp.website_url, '')), '') as website_url,
-        nullif(trim(coalesce(sp.pitch_deck_url, '')), '') as pitch_deck_url,
+        nullif(trim(coalesce(pitch_doc.file_url, '')), '') as pitch_deck_url,
+        nullif(trim(coalesce(pitch_doc.storage_bucket, '')), '') as pitch_deck_storage_bucket,
+        nullif(trim(coalesce(pitch_doc.storage_object_path, '')), '') as pitch_deck_storage_object_path,
         case
-          when sp.pitch_deck_media_kind in ('document', 'video')
-            then sp.pitch_deck_media_kind::text
+          when coalesce(pitch_doc.content_type, '') ilike 'video/%'
+            then 'video'
+          when coalesce(pitch_doc.file_name, '') ~* '\\.(mp4|webm|mov)$'
+            then 'video'
+          when coalesce(pitch_doc.file_url, '') ~* '\\.(mp4|webm|mov)(\\?|$)'
+            then 'video'
+          when pitch_doc.file_url is not null
+            then 'document'
           else null
         end as pitch_deck_media_kind,
-        nullif(trim(coalesce(sp.pitch_deck_file_name, '')), '') as pitch_deck_file_name,
-        sp.pitch_deck_file_size_bytes,
+        nullif(trim(coalesce(pitch_doc.file_name, '')), '') as pitch_deck_file_name,
+        pitch_doc.file_size_bytes as pitch_deck_file_size_bytes,
+        nullif(trim(coalesce(pitch_doc.content_type, '')), '') as pitch_deck_content_type,
         nullif(trim(coalesce(sp.team_overview, '')), '') as team_overview,
         nullif(trim(coalesce(sp.company_stage, '')), '') as company_stage,
         sp.founding_year,
@@ -849,15 +896,90 @@ export class WorkspaceService {
         nullif(trim(coalesce(sp.traction_summary, '')), '') as traction_summary,
         nullif(trim(coalesce(sp.financial_summary, '')), '') as financial_summary,
         nullif(trim(coalesce(sp.legal_summary, '')), '') as legal_summary,
-        nullif(trim(coalesce(sp.financial_doc_url, '')), '') as financial_doc_url,
-        nullif(trim(coalesce(sp.financial_doc_file_name, '')), '') as financial_doc_file_name,
-        sp.financial_doc_file_size_bytes,
-        nullif(trim(coalesce(sp.legal_doc_url, '')), '') as legal_doc_url,
-        nullif(trim(coalesce(sp.legal_doc_file_name, '')), '') as legal_doc_file_name,
-        sp.legal_doc_file_size_bytes,
+        nullif(trim(coalesce(fin_doc.file_url, '')), '') as financial_doc_url,
+        nullif(trim(coalesce(fin_doc.storage_bucket, '')), '') as financial_doc_storage_bucket,
+        nullif(trim(coalesce(fin_doc.storage_object_path, '')), '') as financial_doc_storage_object_path,
+        nullif(trim(coalesce(fin_doc.file_name, '')), '') as financial_doc_file_name,
+        fin_doc.file_size_bytes as financial_doc_file_size_bytes,
+        nullif(trim(coalesce(fin_doc.content_type, '')), '') as financial_doc_content_type,
+        nullif(trim(coalesce(legal_doc.file_url, '')), '') as legal_doc_url,
+        nullif(trim(coalesce(legal_doc.storage_bucket, '')), '') as legal_doc_storage_bucket,
+        nullif(trim(coalesce(legal_doc.storage_object_path, '')), '') as legal_doc_storage_object_path,
+        nullif(trim(coalesce(legal_doc.file_name, '')), '') as legal_doc_file_name,
+        legal_doc.file_size_bytes as legal_doc_file_size_bytes,
+        nullif(trim(coalesce(legal_doc.content_type, '')), '') as legal_doc_content_type,
         sp.updated_at
       from public.organizations o
       left join public.startup_profiles sp on sp.startup_org_id = o.id
+      left join lateral (
+        select
+          d.file_url,
+          d.storage_bucket,
+          d.storage_object_path,
+          d.file_name,
+          d.file_size_bytes,
+          d.content_type
+        from public.startup_data_room_documents d
+        where d.startup_org_id = o.id
+          and d.document_type = 'pitch_deck'::public.startup_data_room_document_type
+        order by d.updated_at desc
+        limit 1
+      ) pitch_doc on true
+      left join lateral (
+        select
+          d.file_url,
+          d.storage_bucket,
+          d.storage_object_path,
+          d.file_name,
+          d.file_size_bytes,
+          d.content_type
+        from public.startup_data_room_documents d
+        where d.startup_org_id = o.id
+          and d.document_type::text = any (
+            array[
+              'financial_doc',
+              'financial_model'
+            ]
+          )
+        order by
+          case d.document_type::text
+            when 'financial_doc' then 1
+            else 2
+          end asc,
+          d.updated_at desc
+        limit 1
+      ) fin_doc on true
+      left join lateral (
+        select
+          d.file_url,
+          d.storage_bucket,
+          d.storage_object_path,
+          d.file_name,
+          d.file_size_bytes,
+          d.content_type
+        from public.startup_data_room_documents d
+        where d.startup_org_id = o.id
+          and d.document_type::text = any (
+            array[
+              'legal_doc',
+              'legal_company_docs',
+              'incorporation_docs',
+              'customer_contracts_summaries',
+              'term_sheet_drafts'
+            ]
+          )
+        order by
+          case d.document_type::text
+            when 'legal_doc' then 1
+            when 'legal_company_docs' then 2
+            when 'incorporation_docs' then 3
+            when 'customer_contracts_summaries' then 4
+            when 'term_sheet_drafts' then 5
+            else 999
+          end asc,
+          d.updated_at desc
+        limit 1
+      ) legal_doc on true
       where o.id = ${orgId}::uuid
         and o.type = 'startup'::public.org_type
       limit 1
@@ -868,10 +990,26 @@ export class WorkspaceService {
       return null;
     }
 
+    const pitchDeckUrl = this.resolveDocumentPublicUrl(
+      row.pitch_deck_url,
+      row.pitch_deck_storage_bucket,
+      row.pitch_deck_storage_object_path,
+    );
+    const financialDocUrl = this.resolveDocumentPublicUrl(
+      row.financial_doc_url,
+      row.financial_doc_storage_bucket,
+      row.financial_doc_storage_object_path,
+    );
+    const legalDocUrl = this.resolveDocumentPublicUrl(
+      row.legal_doc_url,
+      row.legal_doc_storage_bucket,
+      row.legal_doc_storage_object_path,
+    );
+
     return {
       startup_org_id: row.startup_org_id,
       website_url: row.website_url,
-      pitch_deck_url: row.pitch_deck_url,
+      pitch_deck_url: pitchDeckUrl,
       pitch_deck_media_kind: row.pitch_deck_media_kind,
       pitch_deck_file_name: row.pitch_deck_file_name,
       pitch_deck_file_size_bytes: this.normalizeNullableInteger(row.pitch_deck_file_size_bytes),
@@ -884,10 +1022,10 @@ export class WorkspaceService {
       traction_summary: row.traction_summary,
       financial_summary: row.financial_summary,
       legal_summary: row.legal_summary,
-      financial_doc_url: row.financial_doc_url,
+      financial_doc_url: financialDocUrl,
       financial_doc_file_name: row.financial_doc_file_name,
       financial_doc_file_size_bytes: this.normalizeNullableInteger(row.financial_doc_file_size_bytes),
-      legal_doc_url: row.legal_doc_url,
+      legal_doc_url: legalDocUrl,
       legal_doc_file_name: row.legal_doc_file_name,
       legal_doc_file_size_bytes: this.normalizeNullableInteger(row.legal_doc_file_size_bytes),
       updated_at: this.normalizeTimestamp(row.updated_at),
@@ -1330,7 +1468,7 @@ export class WorkspaceService {
         ) m on true
         left join public.organizations o on o.id = m.org_id
         left join public.org_verifications ov on ov.org_id = o.id
-        left join public.startup_readiness_v2 sr
+        left join public.startup_readiness sr
           on sr.org_id = o.id
           and o.type = 'startup'::public.org_type
         limit 1
