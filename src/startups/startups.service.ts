@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { ReadinessService } from '../readiness/readiness.service';
 import { UpstashRedisCacheService } from '../cache/upstash-redis-cache.service';
+import { CapabilitiesService } from '../capabilities/capabilities.service';
 import {
   STARTUP_DATA_ROOM_DOCUMENT_TYPES,
   StartupDataRoomDocumentType,
@@ -37,6 +38,7 @@ export class StartupsService {
     private readonly readiness: ReadinessService,
     private readonly cache: UpstashRedisCacheService,
     private readonly config: ConfigService,
+    private readonly capabilities: CapabilitiesService,
   ) {
     const supabaseUrlRaw = this.normalizeOptionalText(this.config.get<string>('supabaseUrl'));
     this.supabaseStoragePublicBaseUrl = supabaseUrlRaw
@@ -414,6 +416,16 @@ export class StartupsService {
     orgId: string,
     documentType: StartupDataRoomDocumentType,
   ): Promise<void> {
+    const hasUploadCapability = await this.capabilities.hasCapabilityForOrg(
+      orgId,
+      'dataroom.upload',
+    );
+    if (!hasUploadCapability) {
+      throw new Error(
+        'Your current plan does not allow uploading data room documents. Upgrade to add more.',
+      );
+    }
+
     const featureRows = await this.prisma.$queryRaw<
       Array<{
         limit_value: number | string | null;
@@ -938,6 +950,16 @@ export class StartupsService {
       membership.memberRole,
       'Only startup owner or admin can manage data room documents',
     );
+
+    const hasManageCapability = await this.capabilities.hasCapabilityForOrg(
+      membership.orgId,
+      'dataroom.manage',
+    );
+    if (!hasManageCapability) {
+      throw new Error(
+        'Your current plan does not allow managing data room documents. Upgrade to change documents.',
+      );
+    }
 
     const normalizedDocumentId = this.normalizeUuid(documentId);
     if (!normalizedDocumentId) {

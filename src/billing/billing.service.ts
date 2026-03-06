@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { UpstashRedisCacheService } from '../cache/upstash-redis-cache.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { CapabilitiesService } from '../capabilities/capabilities.service';
 import {
   BillingFeatureUsageSnapshot,
   BillingInterval,
@@ -85,6 +86,7 @@ export class BillingService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly cache: UpstashRedisCacheService,
+    private readonly capabilities: CapabilitiesService,
   ) {}
 
   private normalizeOptionalText(value: string | null | undefined): string | null {
@@ -527,6 +529,7 @@ export class BillingService {
     `;
 
     await this.invalidateWorkspaceCachesForOrg(membership.orgId);
+    await this.capabilities.invalidateCapabilitiesForOrg(membership.orgId);
     return this.getCurrentPlanForOrg(membership.orgId);
   }
 

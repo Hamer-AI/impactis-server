@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import Stripe from 'stripe';
 import { UpstashRedisCacheService } from '../cache/upstash-redis-cache.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { CapabilitiesService } from '../capabilities/capabilities.service';
 import {
   BillingInterval,
   BillingSegment,
@@ -57,6 +58,7 @@ export class BillingStripeService {
     private readonly cache: UpstashRedisCacheService,
     private readonly config: ConfigService,
     private readonly billing: BillingService,
+    private readonly capabilities: CapabilitiesService,
   ) {}
 
   private normalizeOptionalText(value: string | null | undefined): string | null {
@@ -1148,5 +1150,6 @@ export class BillingStripeService {
     });
 
     await this.invalidateWorkspaceCachesForOrg(orgId);
+    await this.capabilities.invalidateCapabilitiesForOrg(orgId);
   }
 }
