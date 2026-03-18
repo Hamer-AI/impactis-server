@@ -1,6 +1,6 @@
 import { ForbiddenException, Injectable, InternalServerErrorException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { S3Client, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, DeleteObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import {
   CreateOrganizationLogoUploadUrlInput,
@@ -152,6 +152,36 @@ export class FilesService {
       // Best-effort cleanup; failures are non-fatal.
       return;
     }
+  }
+
+  async createInlineViewUrl(params: {
+    objectKey: string;
+    contentType?: string | null;
+    expiresInSeconds?: number;
+  }): Promise<{ url: string }> {
+    if (!this.s3 || !this.bucketName) {
+      throw new InternalServerErrorException('R2 storage is not configured');
+    }
+
+    const objectKey = this.normalizeOptionalText(params.objectKey);
+    if (!objectKey) {
+      throw new InternalServerErrorException('Object key is required');
+    }
+
+    const expiresInSeconds =
+      typeof params.expiresInSeconds === 'number' && Number.isFinite(params.expiresInSeconds)
+        ? Math.max(60, Math.min(60 * 60 * 6, Math.trunc(params.expiresInSeconds)))
+        : 60 * 60;
+
+    const cmd = new GetObjectCommand({
+      Bucket: this.bucketName,
+      Key: objectKey,
+      ResponseContentDisposition: 'inline',
+      ResponseContentType: this.normalizeOptionalText(params.contentType ?? null) ?? undefined,
+    });
+
+    const url = await getSignedUrl(this.s3, cmd, { expiresIn: expiresInSeconds });
+    return { url };
   }
 
   private assertImageContentType(contentType: string): void {

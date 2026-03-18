@@ -1,7 +1,9 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { MailerService } from '../mailer/mailer.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { BillingUsageService } from '../billing/billing-usage.service';
+import { BillingService } from '../billing/billing.service';
 import { CreateConnectionRequestInput } from './connections.types';
 import type {
   ConnectionMessageView,
@@ -19,6 +21,8 @@ export class ConnectionsService {
     private readonly prisma: PrismaService,
     private readonly mailer: MailerService,
     private readonly notifications: NotificationsService,
+    private readonly billingUsage: BillingUsageService,
+    private readonly billing: BillingService,
   ) {}
 
   private async getRequesterContext(userId: string): Promise<MembershipContext> {
@@ -56,71 +60,125 @@ export class ConnectionsService {
     return rows ?? [];
   }
 
-  private async requireOnboardingCompleted(userId: string): Promise<void> {
-    const rows = await this.prisma.$queryRaw<
-      Array<{ raw_user_meta_data: unknown }>
-    >`
-      select raw_user_meta_data from public.users where id = ${userId}::uuid limit 1
-    `;
-    const meta = rows[0]?.raw_user_meta_data;
-    const completed =
-      meta &&
-      typeof meta === 'object' &&
-      (meta as Record<string, unknown>).onboardingCompleted === true;
-    if (!completed) {
-      throw new Error(
-        'Complete onboarding before sending connection requests. Finish the onboarding steps and try again.',
-      );
-    }
+  private canRequestConnection(fromType: string, toType: string): boolean {
+    if (fromType === toType) return false;
+    if (fromType === 'startup') return toType === 'investor' || toType === 'advisor';
+    if (fromType === 'investor') return toType === 'startup' || toType === 'advisor';
+    if (fromType === 'advisor') return toType === 'startup' || toType === 'investor';
+    return false;
   }
+
+  private readonly logger = new Logger(ConnectionsService.name);
 
   async createRequest(
     userId: string,
     input: CreateConnectionRequestInput,
   ): Promise<ConnectionRequestView> {
-    await this.requireOnboardingCompleted(userId);
     const ctx = await this.getRequesterContext(userId);
-    if (ctx.orgType !== 'investor' && ctx.orgType !== 'advisor') {
-      throw new Error('Only investors and advisors can send connection requests');
+    if (ctx.orgType !== 'startup' && ctx.orgType !== 'investor' && ctx.orgType !== 'advisor') {
+      throw new Error('Only startup, investor, or advisor organizations can send connection requests');
     }
-    const toOrgId = input.toOrgId.trim();
+    const toOrgId = (input.toOrgId ?? '').trim();
+    if (!toOrgId || !CreateConnectionRequestInput.isValidUUID(toOrgId)) {
+      this.logger.warn(`Invalid toOrgId received: "${input.toOrgId}" (trimmed: "${toOrgId}") from user ${userId}`);
+      throw new BadRequestException(`toOrgId must be a valid UUID (received: "${toOrgId.slice(0, 80)}")`);
+    }
     const toOrgRows = await this.prisma.$queryRaw<
       Array<{ id: string; type: string; name: string }>
     >`
       select id, type::text as type, name from public.organizations where id = ${toOrgId}::uuid limit 1
     `;
     const toOrg = toOrgRows[0];
-    if (!toOrg || toOrg.type !== 'startup') {
-      throw new Error('Connection requests can only be sent to startups');
+    if (!toOrg) {
+      throw new Error('Target organization was not found');
+    }
+    if (!this.canRequestConnection(ctx.orgType, toOrg.type)) {
+      throw new Error(`Connection requests are not allowed from ${ctx.orgType} to ${toOrg.type}`);
     }
     if (toOrgId === ctx.orgId) {
       throw new Error('Cannot send a connection request to your own organization');
     }
+    const usage = await this.billingUsage.checkAndIncrementOrgFeatureUsage(
+      ctx.orgId,
+      'connect_requests_sent',
+    );
+    if (!usage.allowed) {
+      throw new ForbiddenException({
+        code: 'USAGE_LIMIT_REACHED',
+        featureKey: usage.featureKey,
+        current: usage.current,
+        limit: usage.limit,
+        planCode: usage.planCode,
+        message:
+          'You have reached the maximum number of connection requests for your current plan. Upgrade to send more requests.',
+      });
+    }
+
     const message = input.message?.trim() || null;
     const fromNameRows = await this.prisma.$queryRaw<Array<{ name: string }>>`
       select name from public.organizations where id = ${ctx.orgId}::uuid limit 1
     `;
     const fromName = fromNameRows[0]?.name ?? '';
 
-    const inserted = await this.prisma.$queryRaw<
-      Array<{
-        id: string;
-        from_org_id: string;
-        to_org_id: string;
-        status: string;
-        message: string | null;
-        created_at: Date;
-        responded_at: Date | null;
-      }>
-    >`
-      insert into public.connection_requests (from_org_id, to_org_id, status, message)
-      values (${ctx.orgId}::uuid, ${toOrgId}::uuid, 'pending'::public.connection_request_status, ${message})
-      on conflict (from_org_id, to_org_id) do update
-      set message = excluded.message, status = 'pending'::public.connection_request_status, responded_at = null
-      returning id, from_org_id, to_org_id, status::text as status, message, created_at, responded_at
-    `;
-    const r = inserted[0];
-    if (!r) throw new Error('Failed to create connection request');
+    const inserted = await this.prisma.$transaction(async (tx) => {
+      const rows = await tx.$queryRaw<
+        Array<{
+          id: string;
+          from_org_id: string;
+          to_org_id: string;
+          status: string;
+          message: string | null;
+          created_at: Date;
+          responded_at: Date | null;
+        }>
+      >`
+        insert into public.connection_requests (from_org_id, to_org_id, status, message)
+        values (${ctx.orgId}::uuid, ${toOrgId}::uuid, 'pending'::public.connection_request_status, ${message})
+        on conflict (from_org_id, to_org_id) do update
+        set message = excluded.message, status = 'pending'::public.connection_request_status, responded_at = null
+        returning id, from_org_id, to_org_id, status::text as status, message, created_at, responded_at
+      `;
+      const r = rows[0];
+      if (!r) {
+        throw new Error('Failed to create connection request');
+      }
+
+      // v3: create success fee lock-in record (12-month window; amounts to be filled when a deal closes).
+      await tx.$queryRaw`
+        insert into public.success_fee_records (
+          payer_org_id,
+          deal_room_id,
+          intro_date,
+          fee_trigger,
+          gross_amount_usd,
+          fee_rate_pct_x100,
+          fee_amount_usd,
+          status,
+          notes,
+          metadata
+        )
+        values (
+          ${ctx.orgId}::uuid,
+          null,
+          current_date,
+          'connection_intro',
+          0::bigint,
+          0::int,
+          0::bigint,
+          'pending',
+          null,
+          jsonb_build_object(
+            'connection_request_id', ${r.id}::text,
+            'from_org_id', ${ctx.orgId}::text,
+            'to_org_id', ${toOrgId}::text
+          )
+        )
+        on conflict do nothing
+      `;
+
+      return r;
+    });
+    const r = inserted;
 
     const connectionsLink = `${APP_ORIGIN.replace(/\/+$/, '')}/workspace/connections`;
     const title = `${fromName} wants to connect`;
@@ -158,7 +216,6 @@ export class ConnectionsService {
 
   async listIncomingRequests(userId: string): Promise<ConnectionRequestView[]> {
     const ctx = await this.getRequesterContext(userId);
-    if (ctx.orgType !== 'startup') return [];
     const list = await this.prisma.$queryRaw<
       Array<{
         id: string;
@@ -232,11 +289,7 @@ export class ConnectionsService {
   }
 
   async acceptRequest(userId: string, requestId: string): Promise<ConnectionView> {
-    await this.requireOnboardingCompleted(userId);
     const ctx = await this.getRequesterContext(userId);
-    if (ctx.orgType !== 'startup') {
-      throw new Error('Only startups can accept connection requests');
-    }
     const reqRows = await this.prisma.$queryRaw<
       Array<{ from_org_id: string; to_org_id: string }>
     >`
@@ -306,7 +359,7 @@ export class ConnectionsService {
       typesSet.has('startup') && typesSet.has('investor');
     if (isStartupInvestor) {
       try {
-        await this.prisma.$executeRaw`
+        await this.prisma.$queryRaw`
           insert into public.deal_rooms (connection_id)
           values (${conn.id}::uuid)
           on conflict (connection_id) do nothing
@@ -356,11 +409,7 @@ export class ConnectionsService {
   }
 
   async rejectRequest(userId: string, requestId: string): Promise<void> {
-    await this.requireOnboardingCompleted(userId);
     const ctx = await this.getRequesterContext(userId);
-    if (ctx.orgType !== 'startup') {
-      throw new Error('Only startups can reject connection requests');
-    }
     const result = await this.prisma.$queryRaw<Array<{ n: number }>>`
       update public.connection_requests
       set status = 'rejected'::public.connection_request_status, responded_at = timezone('utc', now())
@@ -457,6 +506,28 @@ export class ConnectionsService {
     if (!trimmed || trimmed.length > 10000) {
       throw new Error('Message must be 1–10000 characters');
     }
+
+    const plan = await this.billing.getCurrentPlanForOrg(ctx.orgId);
+    const planCode = (plan?.plan.code ?? 'free').toLowerCase();
+    if (planCode === 'free') {
+      const countRows = await this.prisma.$queryRaw<Array<{ n: number }>>`
+        select count(*)::int as n
+        from public.connection_messages
+        where connection_id = ${connectionId}::uuid
+      `;
+      const current = countRows[0]?.n ?? 0;
+      const limit = 5;
+      if (current >= limit) {
+        throw new ForbiddenException({
+          code: 'USAGE_LIMIT_REACHED',
+          featureKey: 'connection_messages_per_conn',
+          current,
+          limit,
+          planCode,
+          message: 'Free plan allows up to 5 messages per connection. Upgrade to continue messaging.',
+        });
+      }
+    }
     const fromNameRows = await this.prisma.$queryRaw<Array<{ name: string }>>`
       select name from public.organizations where id = ${ctx.orgId}::uuid limit 1
     `;
@@ -482,7 +553,6 @@ export class ConnectionsService {
 
   async countPendingIncoming(userId: string): Promise<number> {
     const ctx = await this.getRequesterContext(userId);
-    if (ctx.orgType !== 'startup') return 0;
     const rows = await this.prisma.$queryRaw<Array<{ n: number }>>`
       select count(*)::int as n from public.connection_requests
       where to_org_id = ${ctx.orgId}::uuid and status = 'pending'

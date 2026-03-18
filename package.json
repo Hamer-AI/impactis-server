@@ -23,6 +23,7 @@
     "@nestjs/jwt": "^11.0.0",
     "@nestjs/platform-express": "^11.0.0",
     "@nestjs/platform-socket.io": "^11.1.14",
+    "@nestjs/throttler": "^6.5.0",
     "@nestjs/websockets": "^11.0.0",
     "@prisma/client": "^7.4.2",
     "class-transformer": "^0.5.1",

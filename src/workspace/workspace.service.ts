@@ -918,6 +918,17 @@ export class WorkspaceService {
   }
 
   /** Returns a single discovery card by org id if the current user's feed contains it. */
+  async getUnifiedDiscoveryFeedForUser(
+    userId: string,
+  ): Promise<WorkspaceUnifiedDiscoveryCard[]> {
+    const membership = await this.resolvePrimaryWorkspaceMembershipForUser(userId);
+    if (!membership) {
+      return [];
+    }
+    return this.listUnifiedDiscoveryFeed(membership.orgId, membership.orgType);
+  }
+
+  /** Returns a single discovery card by org id if the current user's feed contains it. */
   async getUnifiedDiscoveryCardForUser(
     userId: string,
     orgId: string,
@@ -1673,6 +1684,17 @@ export class WorkspaceService {
         preferred_contact_method: this.normalizePreferredContactMethod(
           row.preferred_contact_method,
         ),
+        profile_completeness_percent: (() => {
+          const raw = row.profile_completion_percent;
+          const parsed = typeof raw === 'number'
+            ? raw
+            : typeof raw === 'string'
+              ? Number.parseInt(raw.trim(), 10)
+              : NaN;
+          return Number.isFinite(parsed)
+            ? Math.max(0, Math.min(100, Math.trunc(parsed)))
+            : null;
+        })(),
       };
 
       const memberRole = this.normalizeMemberRole(row.member_role);

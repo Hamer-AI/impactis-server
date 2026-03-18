@@ -25,7 +25,6 @@ export class UpstashRedisCacheService {
   private readonly localCache = new Map<string, LocalCacheEntry>();
   private remoteBypassUntilEpochMs = 0;
   private consecutiveRemoteFailures = 0;
-  private hasWarnedDisabled = false;
 
   constructor(private readonly config: ConfigService) {
     this.restUrl = this.normalizeUrl(

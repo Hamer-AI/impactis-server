@@ -1,8 +1,17 @@
-import { IsOptional, IsString, IsUUID, MaxLength, MinLength } from 'class-validator';
+import { IsNotEmpty, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
+import { Transform } from 'class-transformer';
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export class CreateConnectionRequestInput {
-  @IsUUID()
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @IsString()
+  @IsNotEmpty({ message: 'toOrgId is required' })
   toOrgId!: string;
+
+  static isValidUUID(value: string): boolean {
+    return UUID_RE.test(value);
+  }
 
   @IsOptional()
   @IsString()

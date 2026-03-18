@@ -2,15 +2,6 @@ import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { ActiveSession } from './sessions.types';
 
-interface SessionRow {
-    id: string;
-    user_id: string;
-    ip: string | null;
-    user_agent: string | null;
-    created_at: Date | string;
-    updated_at: Date | string;
-}
-
 interface DeleteResult {
     count: number;
 }

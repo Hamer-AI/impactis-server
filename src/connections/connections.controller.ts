@@ -1,6 +1,7 @@
-import { Body, Controller, Get, Param, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Req, UseGuards, VERSION_NEUTRAL } from '@nestjs/common';
 import { AuthenticatedUser } from '../auth-integration/auth-integration.service';
 import { BetterAuthJwtGuard } from '../auth-integration/better-auth-jwt.guard';
+import { ReadinessGuard } from '../onboarding/readiness.guard';
 import { ConnectionsService } from './connections.service';
 import { CreateConnectionRequestInput } from './connections.types';
 import type {
@@ -13,12 +14,13 @@ interface RequestWithUser {
   user?: AuthenticatedUser;
 }
 
-@Controller({ path: 'connections', version: '1' })
+@Controller({ path: 'connections', version: ['1', VERSION_NEUTRAL] })
 @UseGuards(BetterAuthJwtGuard)
 export class ConnectionsController {
   constructor(private readonly connections: ConnectionsService) {}
 
   @Post('requests')
+  @UseGuards(ReadinessGuard)
   async createRequest(
     @Req() req: RequestWithUser,
     @Body() input: CreateConnectionRequestInput,
@@ -61,6 +63,7 @@ export class ConnectionsController {
   }
 
   @Post('requests/:id/accept')
+  @UseGuards(ReadinessGuard)
   async acceptRequest(
     @Req() req: RequestWithUser,
     @Param('id') id: string,
@@ -75,6 +78,7 @@ export class ConnectionsController {
   }
 
   @Post('requests/:id/reject')
+  @UseGuards(ReadinessGuard)
   async rejectRequest(
     @Req() req: RequestWithUser,
     @Param('id') id: string,
@@ -129,6 +133,7 @@ export class ConnectionsController {
   }
 
   @Post(':connectionId/messages')
+  @UseGuards(ReadinessGuard)
   async sendMessage(
     @Req() req: RequestWithUser,
     @Param('connectionId') connectionId: string,

@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Patch, Query, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Patch, Query, Req, UseGuards, VERSION_NEUTRAL } from '@nestjs/common';
 import { AuthenticatedUser } from '../auth-integration/auth-integration.service';
 import { BetterAuthJwtGuard } from '../auth-integration/better-auth-jwt.guard';
 import { BillingService } from './billing.service';
@@ -14,7 +14,7 @@ interface RequestWithUser {
   user?: AuthenticatedUser;
 }
 
-@Controller({ path: 'billing', version: '1' })
+@Controller({ path: 'billing', version: ['1', VERSION_NEUTRAL] })
 @UseGuards(BetterAuthJwtGuard)
 export class BillingController {
   constructor(private readonly billing: BillingService) {}

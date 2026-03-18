@@ -300,28 +300,151 @@ export class BillingService {
     };
   }
 
+  async getCurrentPlanForUser(userId: string): Promise<OrganizationCurrentPlanSnapshot | null> {
+    const me = await this.getBillingMeForUser(userId);
+    if (!me) return null;
+    const { usage: _usage, ...plan } = me;
+    return plan;
+  }
+
+  async listTransactionsForUser(
+    userId: string,
+    limit = 100,
+  ): Promise<Array<{
+    id: string;
+    provider: string;
+    amount_cents: number;
+    currency: string;
+    status: string;
+    created_at: string;
+    provider_payment_id: string | null;
+  }>> {
+    const membership = await this.resolveMembershipContext(userId);
+    const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(200, Math.trunc(limit))) : 100;
+    const rows = await this.prisma.$queryRaw<
+      Array<{
+        id: string;
+        provider: string;
+        amount_cents: number | string | null;
+        currency: string | null;
+        status: string;
+        created_at: Date;
+        provider_payment_id: string | null;
+      }>
+    >`
+      select id::text as id, provider::text as provider, amount_cents, currency, status::text as status, created_at, provider_payment_id
+      from public.payment_transactions
+      where org_id = ${membership.orgId}::uuid
+      order by created_at desc
+      limit ${safeLimit}
+    `;
+
+    const toInt = (value: unknown): number => {
+      if (typeof value === 'number' && Number.isFinite(value)) return Math.trunc(value);
+      if (typeof value === 'string') {
+        const parsed = Number.parseInt(value.trim(), 10);
+        return Number.isFinite(parsed) ? parsed : 0;
+      }
+      return 0;
+    };
+
+    return (rows ?? []).map((r) => ({
+      id: r.id,
+      provider: r.provider,
+      amount_cents: toInt(r.amount_cents),
+      currency: (r.currency ?? 'usd').toLowerCase(),
+      status: r.status,
+      created_at: r.created_at.toISOString(),
+      provider_payment_id: this.normalizeOptionalText(r.provider_payment_id),
+    }));
+  }
+
+  async createPendingOffsitePaymentForUser(params: {
+    userId: string;
+    provider: 'telebirr' | 'mpesa';
+    planCode: string;
+    billingInterval?: string | null;
+  }): Promise<{ transactionId: string; amount_cents: number; currency: string }> {
+    const membership = await this.resolveMembershipContext(params.userId);
+    const planCode = this.normalizeOptionalText(params.planCode)?.toLowerCase() ?? null;
+    if (!planCode) throw new Error('planCode is required');
+    const interval =
+      this.normalizeBillingInterval(params.billingInterval ?? null) ?? 'monthly';
+
+    const planRows = await this.prisma.$queryRaw<Array<{ plan_id: string }>>`
+      select id::text as plan_id
+      from public.billing_plan_catalog
+      where segment::text = ${membership.orgType}
+        and plan_code = ${planCode}
+        and is_active = true
+      limit 1
+    `;
+    const planId = planRows[0]?.plan_id;
+    if (!planId) throw new Error('Plan not found');
+
+    const priceRows = await this.prisma.$queryRaw<Array<{ amount_cents: number }>>`
+      select amount_cents
+      from public.billing_plan_prices
+      where plan_id = ${planId}::uuid and billing_interval = ${interval}::public.billing_interval
+      limit 1
+    `;
+    const amountCents = priceRows[0]?.amount_cents ?? 0;
+    if (amountCents <= 0) throw new Error('Selected plan has no price for interval');
+
+    const rows = await this.prisma.$queryRaw<Array<{ id: string }>>`
+      insert into public.payment_transactions (
+        org_id, transaction_type, amount_cents, currency, status, provider, description, metadata
+      )
+      values (
+        ${membership.orgId}::uuid,
+        'subscription',
+        ${BigInt(amountCents)}::bigint,
+        'USD',
+        'pending'::public.payment_transaction_status,
+        ${params.provider},
+        'Subscription upgrade',
+        jsonb_build_object('plan_code', ${planCode}, 'billing_interval', ${interval})
+      )
+      returning id::text as id
+    `;
+    const id = rows[0]?.id;
+    if (!id) throw new Error('Failed to create transaction');
+
+    return { transactionId: id, amount_cents: amountCents, currency: 'usd' };
+  }
+
   async getCurrentPlanForOrg(orgId: string): Promise<OrganizationCurrentPlanSnapshot | null> {
     const rows = await this.prisma.$queryRaw<Array<CurrentPlanRow>>`
       select
         cp.org_id,
-        cp.org_type::text as org_type,
-        cp.subscription_id,
-        cp.subscription_status,
-        cp.billing_interval,
+        o.type::text as org_type,
+        s.id::text as subscription_id,
+        cp.status::text as subscription_status,
+        cp.billing_interval::text as billing_interval,
         cp.started_at,
         cp.current_period_start,
         cp.current_period_end,
         cp.cancel_at_period_end,
         cp.canceled_at,
-        cp.plan_id,
-        cp.plan_code,
-        cp.plan_name,
-        cp.plan_tier,
-        cp.monthly_price_cents,
-        cp.annual_price_cents,
-        cp.currency,
+        p.id::text as plan_id,
+        p.plan_code,
+        p.display_name as plan_name,
+        p.plan_tier,
+        coalesce(mp.amount_cents, p.monthly_price_usd) as monthly_price_cents,
+        coalesce(ap.amount_cents, p.annual_price_usd) as annual_price_cents,
+        coalesce(mp.currency, 'USD') as currency,
         cp.is_fallback_free
       from public.org_current_subscription_plan_v1 cp
+      join public.organizations o on o.id = cp.org_id
+      join public.billing_plan_catalog p on p.id = cp.plan_id
+      left join public.org_subscriptions s
+        on s.org_id = cp.org_id
+        and s.plan_id = cp.plan_id
+        and s.status = cp.status
+      left join public.billing_plan_prices mp
+        on mp.plan_id = p.id and mp.billing_interval = 'monthly'::public.billing_interval
+      left join public.billing_plan_prices ap
+        on ap.plan_id = p.id and ap.billing_interval = 'annual'::public.billing_interval
       where cp.org_id = ${orgId}::uuid
       limit 1
     `;

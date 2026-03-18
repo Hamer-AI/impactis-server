@@ -1,5 +1,6 @@
-import { Controller, Get, Query, Req, UseGuards } from '@nestjs/common';
+import { Controller, Get, Query, Req, UseGuards, VERSION_NEUTRAL } from '@nestjs/common';
 import { BetterAuthJwtGuard } from '../auth-integration/better-auth-jwt.guard';
+import { ReadinessGuard } from '../onboarding/readiness.guard';
 import { WorkspaceService } from './workspace.service';
 import {
   WorkspaceBootstrapSnapshot,
@@ -15,7 +16,7 @@ interface RequestWithUser {
   user?: AuthenticatedUser;
 }
 
-@Controller({ path: 'workspace', version: '1' })
+@Controller({ path: 'workspace', version: ['1', VERSION_NEUTRAL] })
 @UseGuards(BetterAuthJwtGuard)
 export class WorkspaceController {
   constructor(private readonly workspaceService: WorkspaceService) {}
@@ -90,7 +91,21 @@ export class WorkspaceController {
     return this.workspaceService.getWorkspaceBootstrapSnapshotForUser(user.id);
   }
 
+  @Get('discovery/feed')
+  @UseGuards(ReadinessGuard)
+  async getDiscoveryFeed(
+    @Req() req: RequestWithUser,
+  ): Promise<WorkspaceUnifiedDiscoveryCard[]> {
+    const user = req.user;
+    if (!user) {
+      return [];
+    }
+
+    return this.workspaceService.getUnifiedDiscoveryFeedForUser(user.id);
+  }
+
   @Get('discovery/card')
+  @UseGuards(ReadinessGuard)
   async getDiscoveryCard(
     @Req() req: RequestWithUser,
     @Query('orgId') orgId?: string,

@@ -1,4 +1,4 @@
-import { Controller, Delete, Get, Param, Req, UseGuards } from '@nestjs/common';
+import { Controller, Delete, Get, Param, Req, UseGuards, VERSION_NEUTRAL } from '@nestjs/common';
 import { BetterAuthJwtGuard } from '../auth-integration/better-auth-jwt.guard';
 import { AuthenticatedUser } from '../auth-integration/auth-integration.service';
 import { SessionsService } from './sessions.service';
@@ -8,7 +8,7 @@ interface RequestWithUser {
     user?: AuthenticatedUser;
 }
 
-@Controller({ path: 'sessions', version: '1' })
+@Controller({ path: 'sessions', version: ['1', VERSION_NEUTRAL] })
 @UseGuards(BetterAuthJwtGuard)
 export class SessionsController {
     constructor(private readonly sessions: SessionsService) { }

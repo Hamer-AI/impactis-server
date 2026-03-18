@@ -1,4 +1,4 @@
-import { Body, Controller, Patch, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Patch, Req, UseGuards, VERSION_NEUTRAL } from '@nestjs/common';
 import { BetterAuthJwtGuard } from '../auth-integration/better-auth-jwt.guard';
 import { AuthenticatedUser } from '../auth-integration/auth-integration.service';
 import { ProfileMutationResult, UpdateProfileInput } from './profiles.types';
@@ -8,7 +8,7 @@ interface RequestWithUser {
   user?: AuthenticatedUser;
 }
 
-@Controller({ path: 'profiles', version: '1' })
+@Controller({ path: 'profiles', version: ['1', VERSION_NEUTRAL] })
 @UseGuards(BetterAuthJwtGuard)
 export class ProfilesController {
   constructor(private readonly profiles: ProfilesService) {}

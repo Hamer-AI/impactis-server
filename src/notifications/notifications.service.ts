@@ -10,7 +10,7 @@ export class NotificationsService {
     userId: string,
     params: { type: string; title: string; body?: string | null; link?: string | null },
   ): Promise<void> {
-    await this.prisma.$executeRaw`
+    await this.prisma.$queryRaw`
       insert into public.notifications (user_id, type, title, body, link)
       values (${userId}::uuid, ${params.type}, ${params.title}, ${params.body ?? null}, ${params.link ?? null})
     `;
@@ -63,12 +63,13 @@ export class NotificationsService {
   }
 
   async markRead(userId: string, notificationId: string): Promise<boolean> {
-    const result = await this.prisma.$executeRaw`
+    const result = await this.prisma.$queryRaw<Array<{ n: number }>>`
       update public.notifications
       set read_at = timezone('utc', now())
       where id = ${notificationId}::uuid and user_id = ${userId}::uuid and read_at is null
+      returning 1 as n
     `;
-    return Number(result) > 0;
+    return result.length > 0;
   }
 
   async getUnreadCount(userId: string): Promise<number> {
@@ -77,5 +78,60 @@ export class NotificationsService {
       where user_id = ${userId}::uuid and read_at is null
     `;
     return rows[0]?.n ?? 0;
+  }
+
+  async markAllRead(userId: string): Promise<number> {
+    const rows = await this.prisma.$queryRaw<Array<{ n: number }>>`
+      update public.notifications
+      set read_at = timezone('utc', now())
+      where user_id = ${userId}::uuid and read_at is null
+      returning 1 as n
+    `;
+    return rows.length;
+  }
+
+  async updatePreferences(
+    userId: string,
+    input: {
+      in_app_enabled?: boolean;
+      email_enabled?: boolean;
+      telegram_enabled?: boolean;
+      telegram_chat_id?: string | null;
+      type_overrides?: unknown;
+    },
+  ): Promise<void> {
+    const inApp = input?.in_app_enabled;
+    const email = input?.email_enabled;
+    const telegram = input?.telegram_enabled;
+    const chatId =
+      typeof input?.telegram_chat_id === 'string' ? input.telegram_chat_id.trim() : null;
+    const typeOverrides = input?.type_overrides ?? {};
+
+    await this.prisma.$queryRaw`
+      insert into public.user_notification_preferences (
+        user_id,
+        in_app_enabled,
+        email_enabled,
+        telegram_enabled,
+        telegram_chat_id,
+        type_overrides
+      )
+      values (
+        ${userId}::uuid,
+        coalesce(${inApp}::boolean, true),
+        coalesce(${email}::boolean, true),
+        coalesce(${telegram}::boolean, false),
+        ${chatId},
+        ${typeOverrides}::jsonb
+      )
+      on conflict (user_id) do update
+      set
+        in_app_enabled = coalesce(excluded.in_app_enabled, user_notification_preferences.in_app_enabled),
+        email_enabled = coalesce(excluded.email_enabled, user_notification_preferences.email_enabled),
+        telegram_enabled = coalesce(excluded.telegram_enabled, user_notification_preferences.telegram_enabled),
+        telegram_chat_id = coalesce(excluded.telegram_chat_id, user_notification_preferences.telegram_chat_id),
+        type_overrides = coalesce(excluded.type_overrides, user_notification_preferences.type_overrides),
+        updated_at = timezone('utc', now())
+    `;
   }
 }

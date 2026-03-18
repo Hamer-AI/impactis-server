@@ -1,4 +1,4 @@
-import { Body, Controller, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Post, Req, UseGuards, VERSION_NEUTRAL } from '@nestjs/common';
 import { AuthenticatedUser } from '../auth-integration/auth-integration.service';
 import { BetterAuthJwtGuard } from '../auth-integration/better-auth-jwt.guard';
 import {
@@ -15,7 +15,7 @@ interface RequestWithUser {
   user?: AuthenticatedUser;
 }
 
-@Controller({ path: 'files', version: '1' })
+@Controller({ path: 'files', version: ['1', VERSION_NEUTRAL] })
 @UseGuards(BetterAuthJwtGuard)
 export class FilesController {
   constructor(private readonly files: FilesService) {}

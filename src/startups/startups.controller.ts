@@ -1,8 +1,11 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Req, UseGuards, VERSION_NEUTRAL } from '@nestjs/common';
 import { AuthenticatedUser } from '../auth-integration/auth-integration.service';
 import { BetterAuthJwtGuard } from '../auth-integration/better-auth-jwt.guard';
+import { ReadinessGuard } from '../onboarding/readiness.guard';
 import {
+  CreateStartupDataRoomFolderInput,
   StartupDataRoomDocumentView,
+  StartupDataRoomFolderView,
   StartupMutationResult,
   StartupPostView,
   StartupProfileView,
@@ -18,7 +21,7 @@ interface RequestWithUser {
   user?: AuthenticatedUser;
 }
 
-@Controller({ path: 'startups', version: '1' })
+@Controller({ path: 'startups', version: ['1', VERSION_NEUTRAL] })
 @UseGuards(BetterAuthJwtGuard)
 export class StartupsController {
   constructor(private readonly startups: StartupsService) {}
@@ -88,6 +91,7 @@ export class StartupsController {
   }
 
   @Get('data-room/documents')
+  @UseGuards(ReadinessGuard)
   async getStartupDataRoomDocuments(
     @Req() req: RequestWithUser,
   ): Promise<StartupDataRoomDocumentView[]> {
@@ -98,6 +102,23 @@ export class StartupsController {
 
     try {
       return await this.startups.listStartupDataRoomDocuments(user.id);
+    } catch {
+      return [];
+    }
+  }
+
+  @Get('data-room/folders')
+  @UseGuards(ReadinessGuard)
+  async listStartupDataRoomFolders(
+    @Req() req: RequestWithUser,
+  ): Promise<StartupDataRoomFolderView[]> {
+    const user = req.user;
+    if (!user) {
+      return [];
+    }
+
+    try {
+      return await this.startups.listStartupDataRoomFolders(user.id);
     } catch {
       return [];
     }
@@ -165,6 +186,7 @@ export class StartupsController {
   }
 
   @Post('data-room/documents')
+  @UseGuards(ReadinessGuard)
   async upsertStartupDataRoomDocument(
     @Req() req: RequestWithUser,
     @Body() input: UpsertStartupDataRoomDocumentInput,
@@ -193,7 +215,38 @@ export class StartupsController {
     }
   }
 
+  @Post('data-room/folders')
+  @UseGuards(ReadinessGuard)
+  async createStartupDataRoomFolder(
+    @Req() req: RequestWithUser,
+    @Body() input: CreateStartupDataRoomFolderInput,
+  ): Promise<StartupMutationResult> {
+    const user = req.user;
+    if (!user) {
+      return {
+        success: false,
+        message: 'Unauthorized',
+      };
+    }
+
+    try {
+      await this.startups.createStartupDataRoomFolder(user.id, input);
+      return {
+        success: true,
+        message: 'Data room folder saved.',
+      };
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Unable to save data room folder right now.';
+      return {
+        success: false,
+        message,
+      };
+    }
+  }
+
   @Delete('data-room/documents/:documentId')
+  @UseGuards(ReadinessGuard)
   async deleteStartupDataRoomDocument(
     @Req() req: RequestWithUser,
     @Param('documentId') documentId: string,

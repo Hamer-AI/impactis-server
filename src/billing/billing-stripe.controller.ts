@@ -1,4 +1,4 @@
-import { Body, Controller, Headers, HttpCode, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Headers, HttpCode, Post, Req, UseGuards, VERSION_NEUTRAL } from '@nestjs/common';
 import { AuthenticatedUser } from '../auth-integration/auth-integration.service';
 import { BetterAuthJwtGuard } from '../auth-integration/better-auth-jwt.guard';
 import { BillingStripeService } from './billing-stripe.service';
@@ -15,7 +15,7 @@ interface RequestWithUser {
   body?: unknown;
 }
 
-@Controller({ path: 'billing/stripe', version: '1' })
+@Controller({ path: 'billing/stripe', version: ['1', VERSION_NEUTRAL] })
 export class BillingStripeController {
   constructor(private readonly billingStripe: BillingStripeService) {}
 

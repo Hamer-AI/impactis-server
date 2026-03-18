@@ -35,10 +35,10 @@ async function main() {
       "DATABASE_URL is not set. Add it to impactis-server/.env.local before running the seed.",
     );
   }
-  const pool = new Pool({ connectionString: databaseUrl });
-  pool.on("connect", (client) => {
+  const pool = new Pool({
+    connectionString: databaseUrl,
     // Ensure we can access both public + auth schemas consistently.
-    client.query("SET search_path TO public, auth");
+    options: "-c search_path=public,auth",
   });
 
   const now = new Date();

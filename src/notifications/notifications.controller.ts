@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Patch, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Req, UseGuards, VERSION_NEUTRAL } from '@nestjs/common';
 import { BetterAuthJwtGuard } from '../auth-integration/better-auth-jwt.guard';
 import { NotificationsService } from './notifications.service';
 import type { NotificationView } from './notifications.types';
@@ -8,7 +8,7 @@ interface RequestWithUser {
   user?: AuthenticatedUser;
 }
 
-@Controller({ path: 'notifications', version: '1' })
+@Controller({ path: 'notifications', version: ['1', VERSION_NEUTRAL] })
 @UseGuards(BetterAuthJwtGuard)
 export class NotificationsController {
   constructor(private readonly notifications: NotificationsService) {}
@@ -37,5 +37,26 @@ export class NotificationsController {
     if (!user) return { success: false };
     const success = await this.notifications.markRead(user.id, id);
     return { success };
+  }
+
+  @Patch('read-all')
+  async markAllRead(@Req() req: RequestWithUser): Promise<{ success: boolean; count: number }> {
+    const user = req.user;
+    if (!user) return { success: false, count: 0 };
+    const count = await this.notifications.markAllRead(user.id);
+    return { success: true, count };
+  }
+
+  // v3 mentions notification preferences; keep as a stub until UI exists.
+  @Patch('preferences')
+  async updatePreferences(@Req() req: RequestWithUser, @Body() input: any): Promise<{ success: boolean } | { error: string }> {
+    const user = req.user;
+    if (!user) return { error: 'Unauthorized' };
+    try {
+      await this.notifications.updatePreferences(user.id, input);
+      return { success: true };
+    } catch (e) {
+      return { error: e instanceof Error ? e.message : 'Failed to update preferences' };
+    }
   }
 }

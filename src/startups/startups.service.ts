@@ -5,9 +5,11 @@ import { ReadinessService } from '../readiness/readiness.service';
 import { UpstashRedisCacheService } from '../cache/upstash-redis-cache.service';
 import { CapabilitiesService } from '../capabilities/capabilities.service';
 import {
+  CreateStartupDataRoomFolderInput,
   STARTUP_DATA_ROOM_DOCUMENT_TYPES,
   StartupDataRoomDocumentType,
   StartupDataRoomDocumentView,
+  StartupDataRoomFolderView,
   StartupPostView,
   StartupProfileView,
   StartupPublicDiscoveryProfileView,
@@ -161,6 +163,70 @@ export class StartupsService {
     }
 
     return 'Data Room Document';
+  }
+
+  private normalizeFolderPath(value: string | null | undefined): string | null {
+    const normalized = this.normalizeOptionalText(value);
+    if (!normalized) {
+      return null;
+    }
+    const compact = normalized
+      .replace(/\\/g, '/')
+      .replace(/\/{2,}/g, '/')
+      .replace(/^\/+|\/+$/g, '');
+    return compact.length > 0 ? compact : null;
+  }
+
+  private async appendDataRoomAuditRecord(input: {
+    orgId: string;
+    actorUserId: string;
+    action: 'folder_created' | 'document_upserted' | 'document_deleted';
+    folderPath?: string | null;
+    documentId?: string | null;
+    documentType?: StartupDataRoomDocumentType | null;
+    title?: string | null;
+    fileUrl?: string | null;
+    storageBucket?: string | null;
+    storageObjectPath?: string | null;
+    fileName?: string | null;
+    fileSizeBytes?: number | null;
+    contentType?: string | null;
+    summary?: string | null;
+  }): Promise<void> {
+    await this.prisma.$queryRaw`
+      insert into public.startup_data_room_audit_logs (
+        startup_org_id,
+        action,
+        folder_path,
+        document_id,
+        document_type,
+        title,
+        file_url,
+        storage_bucket,
+        storage_object_path,
+        file_name,
+        file_size_bytes,
+        content_type,
+        summary,
+        actor_user_id
+      )
+      values (
+        ${input.orgId}::uuid,
+        ${input.action},
+        ${input.folderPath ?? null},
+        ${input.documentId ?? null}::uuid,
+        ${input.documentType ?? null}::public.startup_data_room_document_type,
+        ${input.title ?? null},
+        ${input.fileUrl ?? null},
+        ${input.storageBucket ?? null},
+        ${input.storageObjectPath ?? null},
+        ${input.fileName ?? null},
+        ${input.fileSizeBytes ?? null},
+        ${input.contentType ?? null},
+        ${input.summary ?? null},
+        ${input.actorUserId}::uuid
+      )
+    `;
   }
 
   private async syncProfileDocument(input: {
@@ -376,31 +442,60 @@ export class StartupsService {
     orgId: string,
     documentType: StartupDataRoomDocumentType,
   ): Promise<void> {
-    const hasUploadCapability = await this.capabilities.hasCapabilityForOrg(
-      orgId,
-      'dataroom.upload',
-    );
+    let hasUploadCapability = false;
+    try {
+      hasUploadCapability = await this.capabilities.hasCapabilityForOrg(
+        orgId,
+        'dataroom.upload',
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'unknown capability error';
+      const missingPlanView = message.includes('org_current_subscription_plan_v1');
+      if (missingPlanView) {
+        this.logger.warn(
+          'org_current_subscription_plan_v1 is missing; skipping data room plan/capability checks for local/dev upload flow.',
+        );
+        return;
+      }
+      throw error;
+    }
     if (!hasUploadCapability) {
       throw new Error(
         'Your current plan does not allow uploading data room documents. Upgrade to add more.',
       );
     }
 
-    const featureRows = await this.prisma.$queryRaw<
-      Array<{
-        limit_value: number | string | null;
-        is_unlimited: boolean;
-      }>
-    >`
-      select
-        pf.limit_value,
-        pf.is_unlimited
-      from public.org_current_subscription_plan_v1 cp
-      join public.billing_plan_features pf on pf.plan_id = cp.plan_id
-      where cp.org_id = ${orgId}::uuid
-        and pf.feature_key = 'data_room_documents_limit'
-      limit 1
-    `;
+    let featureRows: Array<{
+      limit_value: number | string | null;
+      is_unlimited: boolean;
+    }> = [];
+    try {
+      featureRows = await this.prisma.$queryRaw<
+        Array<{
+          limit_value: number | string | null;
+          is_unlimited: boolean;
+        }>
+      >`
+        select
+          pf.limit_value,
+          pf.is_unlimited
+        from public.org_current_subscription_plan_v1 cp
+        join public.billing_plan_features pf on pf.plan_id = cp.plan_id
+        where cp.org_id = ${orgId}::uuid
+          and pf.feature_key = 'data_room_documents_limit'
+        limit 1
+      `;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'unknown feature error';
+      const missingPlanView = message.includes('org_current_subscription_plan_v1');
+      if (missingPlanView) {
+        this.logger.warn(
+          'org_current_subscription_plan_v1 is missing; treating data room documents as available for local/dev upload flow.',
+        );
+        return;
+      }
+      throw error;
+    }
 
     const feature = featureRows[0];
     if (!feature) {
@@ -731,6 +826,7 @@ export class StartupsService {
         id: string;
         document_type: string;
         title: string | null;
+        folder_path: string | null;
         file_url: string | null;
         storage_bucket: string | null;
         storage_object_path: string | null;
@@ -742,6 +838,7 @@ export class StartupsService {
         d.id,
         d.document_type::text as document_type,
         d.title,
+        d.folder_path,
         d.file_url,
         d.storage_bucket,
         d.storage_object_path,
@@ -851,6 +948,7 @@ export class StartupsService {
         startup_org_id: string;
         document_type: string | null;
         title: string | null;
+        folder_path: string | null;
         file_url: string | null;
         storage_bucket: string | null;
         storage_object_path: string | null;
@@ -867,6 +965,7 @@ export class StartupsService {
         d.startup_org_id,
         d.document_type::text as document_type,
         d.title,
+        d.folder_path,
         d.file_url,
         d.storage_bucket,
         d.storage_object_path,
@@ -927,6 +1026,7 @@ export class StartupsService {
           startup_org_id: startupOrgId,
           document_type: documentType,
           title,
+          folder_path: this.normalizeFolderPath(row.folder_path),
           file_url: fileUrl,
           storage_bucket: storageBucket,
           storage_object_path: storageObjectPath,
@@ -939,6 +1039,79 @@ export class StartupsService {
         };
       })
       .filter((row): row is StartupDataRoomDocumentView => !!row);
+  }
+
+  async listStartupDataRoomFolders(userId: string): Promise<StartupDataRoomFolderView[]> {
+    const membership = await this.resolveStartupMembershipContext(userId);
+    const rows = await this.prisma.$queryRaw<
+      Array<{
+        folder_path: string | null;
+        created_at: string | Date | null;
+        updated_at: string | Date | null;
+      }>
+    >`
+      with folders as (
+        select
+          d.folder_path as folder_path,
+          min(d.created_at) as created_at,
+          max(d.updated_at) as updated_at
+        from public.startup_data_room_documents d
+        where d.startup_org_id = ${membership.orgId}::uuid
+          and d.folder_path is not null
+        group by d.folder_path
+        union all
+        select
+          l.folder_path as folder_path,
+          min(l.created_at) as created_at,
+          max(l.created_at) as updated_at
+        from public.startup_data_room_audit_logs l
+        where l.startup_org_id = ${membership.orgId}::uuid
+          and l.action = 'folder_created'
+          and l.folder_path is not null
+        group by l.folder_path
+      )
+      select
+        f.folder_path,
+        min(f.created_at) as created_at,
+        max(f.updated_at) as updated_at
+      from folders f
+      group by f.folder_path
+      order by f.folder_path asc
+    `;
+
+    return rows
+      .map((row): StartupDataRoomFolderView | null => {
+        const folderPath = this.normalizeFolderPath(row.folder_path);
+        if (!folderPath) return null;
+        return {
+          folder_path: folderPath,
+          created_at: this.normalizeTimestamp(row.created_at),
+          updated_at: this.normalizeTimestamp(row.updated_at),
+        };
+      })
+      .filter((row): row is StartupDataRoomFolderView => !!row);
+  }
+
+  async createStartupDataRoomFolder(
+    userId: string,
+    input: CreateStartupDataRoomFolderInput,
+  ): Promise<void> {
+    const membership = await this.resolveStartupMembershipContext(userId);
+    this.assertStartupEditorRole(
+      membership.memberRole,
+      'Only startup owner or admin can manage data room folders',
+    );
+    const folderPath = this.normalizeFolderPath(input.folderPath);
+    if (!folderPath) {
+      throw new Error('Folder path is required.');
+    }
+    await this.appendDataRoomAuditRecord({
+      orgId: membership.orgId,
+      actorUserId: userId,
+      action: 'folder_created',
+      folderPath,
+    });
+    await this.invalidateWorkspaceBootstrapForOrg(membership.orgId);
   }
 
   async upsertStartupDataRoomDocument(
@@ -992,6 +1165,7 @@ export class StartupsService {
     const fileName = this.normalizeOptionalText(input.fileName);
     const contentType = this.normalizeOptionalText(input.contentType);
     const summary = this.normalizeOptionalText(input.summary);
+    const folderPath = this.normalizeFolderPath(input.folderPath);
     const fileSizeBytes =
       typeof input.fileSizeBytes === 'number'
         ? Math.round(input.fileSizeBytes)
@@ -1007,6 +1181,7 @@ export class StartupsService {
         startup_org_id,
         document_type,
         title,
+        folder_path,
         file_url,
         storage_bucket,
         storage_object_path,
@@ -1021,6 +1196,7 @@ export class StartupsService {
         ${membership.orgId}::uuid,
         ${documentType}::public.startup_data_room_document_type,
         ${title},
+        ${folderPath},
         ${fileUrl},
         ${storageTarget?.bucketId ?? null},
         ${storageTarget?.objectPath ?? null},
@@ -1034,6 +1210,7 @@ export class StartupsService {
       on conflict (startup_org_id, document_type) do update
       set
         title = excluded.title,
+        folder_path = excluded.folder_path,
         file_url = excluded.file_url,
         storage_bucket = excluded.storage_bucket,
         storage_object_path = excluded.storage_object_path,
@@ -1044,6 +1221,34 @@ export class StartupsService {
         uploaded_by = ${userId}::uuid,
         updated_at = timezone('utc', now())
     `;
+
+    const savedRows = await this.prisma.$queryRaw<
+      Array<{
+        id: string;
+      }>
+    >`
+      select d.id
+      from public.startup_data_room_documents d
+      where d.startup_org_id = ${membership.orgId}::uuid
+        and d.document_type = ${documentType}::public.startup_data_room_document_type
+      limit 1
+    `;
+    await this.appendDataRoomAuditRecord({
+      orgId: membership.orgId,
+      actorUserId: userId,
+      action: 'document_upserted',
+      folderPath,
+      documentId: savedRows[0]?.id ?? null,
+      documentType,
+      title,
+      fileUrl,
+      storageBucket: storageTarget?.bucketId ?? null,
+      storageObjectPath: storageTarget?.objectPath ?? null,
+      fileName,
+      fileSizeBytes,
+      contentType,
+      summary,
+    });
 
     await this.invalidateWorkspaceBootstrapForOrg(membership.orgId);
   }
@@ -1070,16 +1275,63 @@ export class StartupsService {
       throw new Error('Data room document id is invalid.');
     }
 
-    const rows = await this.prisma.$queryRaw<Array<{ id: string }>>`
+    const existingRows = await this.prisma.$queryRaw<
+      Array<{
+        id: string;
+        document_type: string | null;
+        folder_path: string | null;
+        title: string | null;
+        file_url: string | null;
+        storage_bucket: string | null;
+        storage_object_path: string | null;
+        file_name: string | null;
+        file_size_bytes: number | string | null;
+        content_type: string | null;
+        summary: string | null;
+      }>
+    >`
+      select
+        d.id,
+        d.document_type::text as document_type,
+        d.folder_path,
+        d.title,
+        d.file_url,
+        d.storage_bucket,
+        d.storage_object_path,
+        d.file_name,
+        d.file_size_bytes,
+        d.content_type,
+        d.summary
+      from public.startup_data_room_documents d
+      where d.id = ${normalizedDocumentId}::uuid
+        and d.startup_org_id = ${membership.orgId}::uuid
+      limit 1
+    `;
+    const existing = existingRows[0];
+    if (!existing?.id) {
+      throw new Error('Data room document was not found.');
+    }
+    await this.prisma.$queryRaw`
       delete from public.startup_data_room_documents d
       where d.id = ${normalizedDocumentId}::uuid
         and d.startup_org_id = ${membership.orgId}::uuid
-      returning d.id
     `;
-
-    if (!rows[0]?.id) {
-      throw new Error('Data room document was not found.');
-    }
+    await this.appendDataRoomAuditRecord({
+      orgId: membership.orgId,
+      actorUserId: userId,
+      action: 'document_deleted',
+      folderPath: this.normalizeFolderPath(existing.folder_path),
+      documentId: existing.id,
+      documentType: this.normalizeStartupDataRoomDocumentType(existing.document_type),
+      title: this.normalizeOptionalText(existing.title),
+      fileUrl: this.normalizeOptionalText(existing.file_url),
+      storageBucket: this.normalizeOptionalText(existing.storage_bucket),
+      storageObjectPath: this.normalizeOptionalText(existing.storage_object_path),
+      fileName: this.normalizeOptionalText(existing.file_name),
+      fileSizeBytes: this.normalizeNullableInteger(existing.file_size_bytes),
+      contentType: this.normalizeOptionalText(existing.content_type),
+      summary: this.normalizeOptionalText(existing.summary),
+    });
 
     await this.invalidateWorkspaceBootstrapForOrg(membership.orgId);
   }

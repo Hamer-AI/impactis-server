@@ -87,52 +87,6 @@ export class CacheTelemetryService implements OnModuleInit, OnModuleDestroy {
     this.windowStartedAtMs = windowEndedAtMs;
   }
 
-  private parseBoolean(value: boolean | null | undefined, fallback: boolean): boolean {
-    if (typeof value === 'boolean') {
-      return value;
-    }
-
-    return fallback;
-  }
-
-  private parseBooleanFromEnv(value: string | undefined, fallback: boolean): boolean {
-    if (typeof value !== 'string') {
-      return fallback;
-    }
-
-    const normalized = value.trim().toLowerCase();
-    if (normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on') {
-      return true;
-    }
-
-    if (normalized === '0' || normalized === 'false' || normalized === 'no' || normalized === 'off') {
-      return false;
-    }
-
-    return fallback;
-  }
-
-  private parsePositiveInt(value: number | null | undefined, fallback: number): number {
-    if (typeof value === 'number' && Number.isFinite(value) && value >= 1) {
-      return Math.trunc(value);
-    }
-
-    return fallback;
-  }
-
-  private parsePositiveIntFromEnv(value: string | undefined, fallback: number): number {
-    if (typeof value !== 'string') {
-      return fallback;
-    }
-
-    const parsed = Number.parseInt(value.trim(), 10);
-    if (Number.isFinite(parsed) && parsed >= 1) {
-      return parsed;
-    }
-
-    return fallback;
-  }
-
   private buildCounterKey(metric: string, tags?: TelemetryTags): string {
     if (!tags || typeof tags !== 'object') {
       return metric;

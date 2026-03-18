@@ -10,6 +10,7 @@ import {
   Req,
   UseGuards,
   Query,
+  VERSION_NEUTRAL,
 } from '@nestjs/common';
 import { IsString, MinLength } from 'class-validator';
 import { AuthenticatedUser } from '../auth-integration/auth-integration.service';
@@ -43,7 +44,7 @@ class AcceptOrganizationInviteInput {
   inviteToken!: string;
 }
 
-@Controller({ path: 'organizations', version: '1' })
+@Controller({ path: 'organizations', version: ['1', VERSION_NEUTRAL] })
 @UseGuards(BetterAuthJwtGuard)
 export class OrganizationsController {
   constructor(private readonly organizations: OrganizationsService) {}

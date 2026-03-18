@@ -134,6 +134,7 @@ export type StartupDataRoomDocumentView = {
   id: string;
   startup_org_id: string;
   document_type: StartupDataRoomDocumentType;
+  folder_path: string | null;
   title: string;
   file_url: string;
   storage_bucket: string | null;
@@ -144,6 +145,12 @@ export type StartupDataRoomDocumentView = {
   summary: string | null;
   created_at: string;
   updated_at: string;
+};
+
+export type StartupDataRoomFolderView = {
+  folder_path: string;
+  created_at: string | null;
+  updated_at: string | null;
 };
 
 export class UpdateStartupProfileInput {
@@ -295,6 +302,11 @@ export class UpsertStartupDataRoomDocumentInput {
   title!: string;
 
   @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  folderPath?: string | null;
+
+  @IsOptional()
   @IsUrl({ require_protocol: true })
   fileUrl?: string | null;
 
@@ -328,4 +340,11 @@ export class UpsertStartupDataRoomDocumentInput {
   @IsString()
   @MaxLength(2000)
   summary?: string | null;
+}
+
+export class CreateStartupDataRoomFolderInput {
+  @IsString()
+  @MinLength(1)
+  @MaxLength(255)
+  folderPath!: string;
 }

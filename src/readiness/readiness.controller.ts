@@ -5,6 +5,7 @@ import {
   Query,
   Req,
   UseGuards,
+  VERSION_NEUTRAL,
 } from '@nestjs/common';
 import { AuthenticatedUser } from '../auth-integration/auth-integration.service';
 import { BetterAuthJwtGuard } from '../auth-integration/better-auth-jwt.guard';
@@ -15,7 +16,7 @@ interface RequestWithUser {
   user?: AuthenticatedUser;
 }
 
-@Controller({ path: 'admin/readiness', version: '1' })
+@Controller({ path: 'admin/readiness', version: ['1', VERSION_NEUTRAL] })
 @UseGuards(BetterAuthJwtGuard)
 export class ReadinessController {
   constructor(private readonly readiness: ReadinessService) {}

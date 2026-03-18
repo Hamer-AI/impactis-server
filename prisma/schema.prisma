@@ -1,3 +1,35 @@
+// =============================================================================
+// IMPACTIS PLATFORM — MASTER PRISMA SCHEMA
+// =============================================================================
+// Tech: NestJS (server) + Next.js (client) | Auth: Better Auth | Storage: Cloudflare R2
+// Payment: Stripe | DB: PostgreSQL | Cache: Upstash Redis
+//
+// ROLE OVERVIEW
+//   startup   — company seeking funding / advisor support
+//   investor  — individual/fund providing capital
+//   advisor   — consultant/expert providing services
+//
+// TIER OVERVIEW (per segment)
+//   free → pro → elite
+//
+// MODULE MAP
+//   §1  Auth & Session          (Better Auth managed)
+//   §2  Users & Profiles        (personal identity + scoring)
+//   §3  Organizations           (entity per role)
+//   §4  Onboarding              (role-specific questions, step tracking)
+//   §5  Billing & Subscriptions (plans, prices, capabilities, usage)
+//   §6  Discovery & AI Matching (scores, feedback, profile views)
+//   §7  Connections             (requests, accepted, messages)
+//   §8  Deal Room               (negotiation workspace, stages, chat)
+//   §9  Data Room               (document vault, access control, analytics)
+//   §10 Syndicates              (co-investor groups)
+//   §11 Payments & Fees         (transactions, success fees, escrow)
+//   §12 Notifications           (in-app + email triggers)
+//   §13 Security                (2FA, devices, audit events)
+//   §14 Support                 (tickets, AI chatbot, customer support)
+//   §15 Admin                   (admin users, platform audit)
+// =============================================================================
+
 generator client {
   provider        = "prisma-client-js"
   previewFeatures = ["partialIndexes"]
@@ -8,17 +40,21 @@ datasource db {
   schemas  = ["public"]
 }
 
-// Better Auth user table (public schema only). Column names match Better Auth (snake_case in DB).
-model users {
-  id               String    @id @db.Uuid
-  name             String?
-  email            String?
-  emailVerified    Boolean?  @default(false) @map("email_verified")
-  image            String?
-  createdAt        DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt        DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
-  raw_user_meta_data Json?   @map("raw_user_meta_data")
+// =============================================================================
+// §1 — AUTH & SESSION  (Better Auth managed tables, kept as-is)
+// =============================================================================
 
+model users {
+  id             String    @id @db.Uuid
+  name           String?
+  email          String?
+  emailVerified  Boolean?  @default(false) @map("email_verified")
+  image          String?
+  createdAt      DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+  raw_user_meta_data Json? @map("raw_user_meta_data")
+
+  // Relations
   accounts                                      accounts[]
   sessions                                      sessions[]
   profiles                                      profiles?
@@ -26,46 +62,675 @@ model users {
   investor_profiles                             investor_profiles[]
   startup_profiles                              startup_profiles[]
   startup_data_room_documents                   startup_data_room_documents[]
-  startup_posts_startup_posts_created_byTousers startup_posts[]               @relation("startup_posts_created_byTousers")
-  startup_posts_startup_posts_updated_byTousers startup_posts[]              @relation("startup_posts_updated_byTousers")
-  org_invites_org_invites_accepted_byTousers   org_invites[]                 @relation("org_invites_accepted_byTousers")
-  org_invites_org_invites_invited_byTousers    org_invites[]                 @relation("org_invites_invited_byTousers")
-  org_members_org_members_invited_byTousers    org_members[]                 @relation("org_members_invited_byTousers")
-  org_members_org_members_user_idTousers        org_members?                  @relation("org_members_user_idTousers")
+  startup_data_room_audit_logs                  startup_data_room_audit_logs[]
+  startup_posts_startup_posts_created_byTousers startup_posts[] @relation("startup_posts_created_byTousers")
+  startup_posts_startup_posts_updated_byTousers startup_posts[] @relation("startup_posts_updated_byTousers")
+  org_invites_org_invites_accepted_byTousers    org_invites[]   @relation("org_invites_accepted_byTousers")
+  org_invites_org_invites_invited_byTousers     org_invites[]   @relation("org_invites_invited_byTousers")
+  org_members_org_members_invited_byTousers     org_members[]   @relation("org_members_invited_byTousers")
+  org_members_org_members_user_idTousers        org_members?    @relation("org_members_user_idTousers")
   org_status                                    org_status[]
   org_verifications                             org_verifications[]
   notifications                                 notifications[]
+  two_factor_settings                           user_two_factor_settings[]
+  security_events                               user_security_events[]
+  user_devices                                  user_devices[]
+  support_tickets                               support_tickets[]
+  support_messages                              support_messages[]
+  ai_chat_sessions                              ai_chat_sessions[]
+  deal_room_messages                            deal_room_messages[]
+  admin_users                                   admin_users[]
+  user_notification_preferences                  user_notification_preferences?
 
   @@schema("public")
 }
 
-/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
-/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
-model advisor_profiles {
-  advisor_org_id   String        @id @db.Uuid
-  website_url      String?
-  linkedin_url     String?
-  bio              String?
-  expertise_tags   String[]      @default([])
-  years_experience Int?
-  created_at       DateTime      @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
-  updated_at       DateTime      @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
-  updated_by       String?       @db.Uuid
-  organizations    organizations @relation(fields: [advisor_org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  users            users?        @relation(fields: [updated_by], references: [id], onUpdate: NoAction)
+model accounts {
+  id                    String    @id
+  accountId             String
+  providerId            String
+  userId                String    @db.Uuid
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime? @db.Timestamptz(6)
+  refreshTokenExpiresAt DateTime? @db.Timestamptz(6)
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt             DateTime  @db.Timestamptz(6)
+  users                 users     @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
-  @@index([updated_at(sort: Desc)])
+  @@index([userId], map: "public.accounts_userId_idx")
   @@schema("public")
 }
 
-/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
-/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model sessions {
+  id        String   @id
+  expiresAt DateTime @db.Timestamptz(6)
+  token     String   @unique
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @db.Timestamptz(6)
+  ipAddress String?
+  userAgent String?
+  userId    String   @db.Uuid
+  users     users    @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([userId], map: "public.sessions_userId_idx")
+  @@schema("public")
+}
+
+model jwks {
+  id         String    @id
+  publicKey  String
+  privateKey String
+  createdAt  DateTime  @db.Timestamptz(6)
+  expiresAt  DateTime? @db.Timestamptz(6)
+
+  @@schema("public")
+}
+
+model verification {
+  id         String   @id
+  identifier String
+  value      String
+  expiresAt  DateTime @db.Timestamptz(6)
+  createdAt  DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt  DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([identifier])
+  @@schema("public")
+}
+
+// =============================================================================
+// §2 — USERS & PROFILES  (personal identity, completeness scoring)
+// =============================================================================
+
+/// Personal profile linked 1:1 to a user. Covers name, photo, bio, links.
+model profiles {
+  id                         String    @id @db.Uuid
+  full_name                  String?
+  location                   String?
+  bio                        String?
+  avatar_url                 String?
+  phone                      String?
+  headline                   String?
+  website_url                String?
+  linkedin_url               String?
+  twitter_url                String?
+  crunchbase_url             String?
+  angellist_url              String?
+  timezone_name              String?
+  preferred_contact_method   String?
+  profile_completeness_percent Int?   @db.SmallInt
+  created_at                 DateTime? @default(now()) @db.Timestamptz(6)
+  updated_at                 DateTime? @default(now()) @db.Timestamptz(6)
+  users                      users     @relation(fields: [id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@schema("public")
+}
+
+// =============================================================================
+// §3 — ORGANIZATIONS  (one org per user; type = startup | investor | advisor)
+// =============================================================================
+
+/// One organization per user. The type determines which role-specific tables apply.
+model organizations {
+  id                          String                        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  type                        org_type
+  name                        String
+  location                    String?
+  country                     String?
+  industry_tags               String[]                      @default([])
+  logo_url                    String?
+  website_url                 String?
+  finance_status              String?
+  onboarding_complete         Boolean                       @default(false)
+  created_at                  DateTime                      @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  updated_at                  DateTime                      @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+
+  // Role-specific profiles
+  advisor_profiles            advisor_profiles?
+  investor_profiles           investor_profiles?
+  startup_profiles            startup_profiles?
+  startup_posts               startup_posts?
+  startup_data_room_documents startup_data_room_documents[]
+  startup_data_room_audit_logs startup_data_room_audit_logs[]
+  startup_data_room_folders   startup_data_room_folders[]
+
+  // Org management
+  org_capabilities_overrides  org_capabilities_overrides[]
+  org_feature_usage_counters  org_feature_usage_counters[]
+  org_invites                 org_invites[]
+  org_members                 org_members[]
+  org_status                  org_status?
+  org_subscription_accounts   org_subscription_accounts?
+  org_subscriptions           org_subscriptions[]
+  org_verifications           org_verifications?
+
+  // Onboarding
+  onboarding_progress         onboarding_progress[]
+  investor_onboarding_answers investor_onboarding_answers?
+  startup_onboarding_answers  startup_onboarding_answers?
+  advisor_onboarding_answers  advisor_onboarding_answers?
+  org_profile_scores          org_profile_scores?
+
+  // Discovery / Matching
+  discovery_views_given       discovery_profile_views[]     @relation("discovery_views_given")
+  discovery_views_received    discovery_profile_views[]     @relation("discovery_views_received")
+  ai_match_scores_from        ai_match_scores[]             @relation("ai_match_from")
+  ai_match_scores_to          ai_match_scores[]             @relation("ai_match_to")
+  ai_match_feedback_from      ai_match_feedback[]           @relation("ai_match_feedback_from")
+  org_ai_embeddings           org_ai_embeddings?
+  ai_embedding_jobs           ai_embedding_jobs[]
+  warm_intros_sent            warm_intro_requests[]         @relation("warm_intro_sender")
+  warm_intros_received        warm_intro_requests[]         @relation("warm_intro_receiver")
+  warm_intros_via             warm_intro_requests[]         @relation("warm_intro_via_advisor")
+
+  // Connections
+  connection_requests_from    connection_requests[]         @relation("connection_requests_from_org")
+  connection_requests_to      connection_requests[]         @relation("connection_requests_to_org")
+  connections_org_a           connections[]                 @relation("connections_org_a")
+  connections_org_b           connections[]                 @relation("connections_org_b")
+  connection_messages         connection_messages[]
+
+  // Deal Rooms
+  deal_room_participants      deal_room_participants[]
+  deal_room_requests_as_startup deal_room_requests[]        @relation("deal_room_requests_startup")
+  deal_room_requests_as_investor deal_room_requests[]       @relation("deal_room_requests_investor")
+
+  // Data Room access
+  data_room_access_requests_requester data_room_access_requests[] @relation("dr_access_requester")
+  data_room_access_requests_owner     data_room_access_requests[] @relation("dr_access_owner")
+  data_room_access_grants             data_room_access_grants[]
+  data_room_document_views            data_room_document_views[]
+  data_room_consents_as_startup       data_room_consents[]   @relation("dr_consent_startup")
+  data_room_consents_as_grantee       data_room_consents[]   @relation("dr_consent_grantee")
+
+  // Syndicates
+  syndicates_lead             syndicates[]
+  syndicate_members           syndicate_members[]
+
+  // Payments
+  payment_transactions        payment_transactions[]
+  success_fee_records         success_fee_records[]
+
+  // Support tickets
+  support_tickets             support_tickets[]
+
+  @@index([type, created_at(sort: Desc)], map: "organizations_type_created_idx")
+  @@schema("public")
+}
+
+model org_members {
+  org_id                              String                @db.Uuid
+  user_id                             String                @unique(map: "org_members_single_org_per_user_idx") @db.Uuid
+  member_role                         org_member_role       @default(member)
+  status                              org_membership_status @default(active)
+  invited_by                          String?               @db.Uuid
+  joined_at                           DateTime              @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  created_at                          DateTime              @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  users_org_members_invited_byTousers users?                @relation("org_members_invited_byTousers", fields: [invited_by], references: [id], onUpdate: NoAction)
+  organizations                       organizations         @relation(fields: [org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  users_org_members_user_idTousers    users                 @relation("org_members_user_idTousers", fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([org_id, user_id])
+  @@index([org_id, status], map: "org_members_org_status_idx")
+  @@index([user_id, status, created_at], map: "org_members_user_status_created_idx")
+  @@index([user_id, status, created_at, org_id], map: "org_members_user_status_created_org_idx")
+  @@schema("public")
+}
+
+model org_invites {
+  id                                   String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  org_id                               String            @db.Uuid
+  invited_email                        String
+  member_role                          org_member_role   @default(member)
+  status                               org_invite_status @default(pending)
+  invited_by                           String            @db.Uuid
+  accepted_by                          String?           @db.Uuid
+  token_hash                           String            @unique
+  expires_at                           DateTime          @db.Timestamptz(6)
+  notes                                String?
+  created_at                           DateTime          @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  responded_at                         DateTime?         @db.Timestamptz(6)
+  users_org_invites_accepted_byTousers users?            @relation("org_invites_accepted_byTousers", fields: [accepted_by], references: [id], onUpdate: NoAction)
+  users_org_invites_invited_byTousers  users             @relation("org_invites_invited_byTousers", fields: [invited_by], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  organizations                        organizations     @relation(fields: [org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([org_id, status, created_at(sort: Desc)], map: "org_invites_org_status_created_idx")
+  @@schema("public")
+}
+
+model org_status {
+  org_id        String               @id @db.Uuid
+  status        org_lifecycle_status @default(active)
+  updated_by    String?              @db.Uuid
+  reason        String?
+  created_at    DateTime             @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  updated_at    DateTime             @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  organizations organizations        @relation(fields: [org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  users         users?               @relation(fields: [updated_by], references: [id], onUpdate: NoAction)
+
+  @@schema("public")
+}
+
+model org_verifications {
+  org_id        String                  @id @db.Uuid
+  status        org_verification_status @default(unverified)
+  reviewed_by   String?                 @db.Uuid
+  reviewed_at   DateTime?               @db.Timestamptz(6)
+  notes         String?
+  documents     Json                    @default("[]")
+  created_at    DateTime                @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  updated_at    DateTime                @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  organizations organizations           @relation(fields: [org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  users         users?                  @relation(fields: [reviewed_by], references: [id], onUpdate: NoAction)
+
+  @@schema("public")
+}
+
+// =============================================================================
+// §4 — ONBOARDING  (step tracking + role-specific detailed answers)
+// =============================================================================
+
+/// Tracks which onboarding steps have been completed/skipped for an org.
+/// step_key examples: basic_info | investment_criteria | industry_focus | pitch_materials | verification
+model onboarding_progress {
+  id            String                  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  org_id        String                  @db.Uuid
+  step_key      String
+  step_number   Int
+  status        onboarding_step_status  @default(not_started)
+  skipped_at    DateTime?               @db.Timestamptz(6)
+  completed_at  DateTime?               @db.Timestamptz(6)
+  created_at    DateTime                @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  updated_at    DateTime                @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  organizations organizations           @relation(fields: [org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([org_id, step_key], map: "onboarding_progress_org_step_key_unique")
+  @@index([org_id, step_number], map: "onboarding_progress_org_step_idx")
+  @@schema("public")
+}
+
+/// Full investor onboarding answers (mirrors the PDF template).
+model investor_onboarding_answers {
+  org_id String @id @db.Uuid
+
+  // §1 Basic / Identity
+  profile_type                String?    // angel_individual | angel_group | vc_fund | corporate_vc | family_office | private_equity | strategic | accelerator
+  entity_name                 String?
+  primary_contact_name        String?
+  title_role                  String?
+  linkedin_url                String?
+  crunchbase_url              String?
+  angellist_url               String?
+  twitter_url                 String?
+
+  // §2 Investment Experience
+  investing_years_band        String?    // <1 | 1-3 | 3-5 | 5-10 | 10+
+  total_investments_made_band String?    // 0 | 1-5 | 6-15 | 16-30 | 31-50 | 50+
+  notable_exits               String?
+
+  // §3 Investment Capacity
+  check_size_band             String?    // e.g. 25k-50k | 50k-100k | etc.
+  check_size_min_usd          BigInt?
+  check_size_max_usd          BigInt?
+  total_investable_capital_band String?
+  new_investments_12mo_band   String?
+  investment_structures       String[]   @default([])
+  // equity_common | safe | convertible_note | etc.
+
+  // §4 Stage Preference  (jsonb: [{stage, interest_level, portfolio_pct}])
+  stage_preferences           Json       @default("[]")
+  startup_maturity_preference String[]   @default([])
+
+  // §5 Industry Focus  (jsonb: [{industry, rank, attitude: must_have|open_to|not_interested}])
+  industry_preferences        Json       @default("[]")
+  industry_expertise_summary  String?
+
+  // §6 Geographic Preferences
+  geographic_regions          String[]   @default([])
+  specific_cities             String?
+  remote_team_openness        String?
+
+  // §7 Business Model Preference
+  business_model_preferences  String[]   @default([])
+  revenue_requirement_band    String?
+
+  // §8 Investment Philosophy
+  investment_approach         String?    // hands_on | strategic | passive | lead | follow_on
+  value_add_offerings         String[]   @default([])
+  specific_expertise          String?
+  notable_doors               String?
+
+  // §9 Founder Preferences  (jsonb: [{characteristic, rank}])
+  founder_preferences         Json       @default("[]")
+  team_composition_preference String?
+  diversity_priority          String?
+
+  // §10 Deal Structure
+  round_participation         String?
+  due_diligence_timeframe     String?
+  board_seat_expectation      String?
+  follow_on_capacity          String?
+
+  // §11 Matching Preferences
+  discovery_preference        String?
+  deal_flow_volume_preference String?
+  pitch_format_preferences    String[]   @default([])
+  must_haves                  String[]   @default([])
+  deal_breakers               String[]   @default([])
+
+  // §12 Consultant Engagement
+  consultant_engagement       String?
+  consultant_services_needed  String[]   @default([])
+  consultant_budget_band      String?
+
+  // §13 Platform Engagement
+  activity_level              String?
+  response_time_commitment    String?
+  quarterly_investment_target String?
+  profile_visibility          String?
+
+  // §14 Investment Thesis
+  investment_thesis_bio       String?
+
+  // §15 AI Matching Weights (jsonb: [{factor, rank}])
+  match_algorithm_weights     Json       @default("[]")
+  notification_threshold      String?    // 95+ | 85+ | 75+ | 60+ | manual
+  notification_frequency      String?    // realtime | daily | weekly | biweekly
+
+  created_at                  DateTime   @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  updated_at                  DateTime   @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  organizations               organizations @relation(fields: [org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@schema("public")
+}
+
+/// Full startup onboarding answers (mirrors the PDF template).
+model startup_onboarding_answers {
+  org_id String @id @db.Uuid
+
+  // §1 Company Identity
+  legal_name                  String?
+  trading_name                String?
+  company_email               String?
+  founded_date                DateTime?  @db.Date
+  country_of_incorporation    String?
+  primary_office_location     String?
+  linkedin_company_url        String?
+  crunchbase_url              String?
+  angellist_url               String?
+  twitter_url                 String?
+  product_demo_link           String?
+  app_store_link              String?
+  play_store_link             String?
+
+  // §2 Stage
+  company_stage_band          String?    // ideation | pre_seed_building | pre_seed_mvp | seed | series_a | series_b | series_c_plus | bootstrapped
+  product_status              String?    // idea | wireframes | mvp_dev | mvp_launched | public_beta | launched | established
+  time_in_business_band       String?    // <6mo | 6mo-1yr | 1-2yr | 2-3yr | 3-5yr | 5yr+
+
+  // §3 Business Overview
+  problem_statement           String?
+  target_customer_description String?
+  current_alternatives        String?
+  solution_statement          String?
+  unique_advantage            String?
+  elevator_pitch              String?
+
+  // §4 Industry & Market
+  primary_industry            String?
+  sub_sector                  String?
+  tam_band                    String?    // <100M | 100M-500M | 500M-1B | 1B-5B | 5B-20B | 20B+
+  sam_band                    String?
+
+  // §5 Business Model
+  revenue_model               String?
+  pricing_model_description   String?
+  avg_monthly_price_usd       Int?
+  avg_annual_price_usd        Int?
+  target_customer_type        String?    // smb | mid_market | enterprise | consumer | mixed
+  sales_motion                String?
+  ltv_usd                     Int?
+  cac_usd                     Int?
+
+  // §6 Traction & Revenue
+  current_revenue_status      String?
+  mrr_usd                     Int?
+  arr_usd                     Int?
+  revenue_growth_rate_mom_pct Int?
+  runway_months               Int?
+  monthly_burn_usd            Int?
+  gross_margin_pct            Int?
+  cash_in_bank_usd            Int?
+  profitability_status        String?    // profitable | break_even | not_profitable
+
+  // §7 Customer Metrics
+  total_paying_customers      Int?
+  total_users                 Int?
+  mau                         Int?
+  waitlist_count              Int?
+  churn_rate_pct              Int?
+  nrr_pct                     Int?
+  avg_customer_lifetime_months Int?
+  key_traction_highlights     String?
+
+  // §8 Team
+  co_founders_count           Int?
+  founders_data               Json       @default("[]")  // [{name, title, linkedin, background, expertise, education}]
+  team_strengths              String?
+  diversity_indicators        String[]   @default([])
+  total_team_size             Int?
+  team_breakdown              Json       @default("{}")
+  // {engineering, product, sales, marketing, ops, other}
+  key_hires_in_place          String[]   @default([])
+  advisors_data               Json       @default("[]")  // [{name, background, value}]
+  advisory_compensation       String?
+
+  // §9 Funding History
+  total_capital_raised_usd    BigInt?
+  funding_rounds              Json       @default("[]")  // [{round, amount, date, lead_investor, valuation}]
+  bootstrapped_status         String?
+  notable_investors           String?
+
+  // §10 Current Fundraise
+  currently_fundraising       Boolean    @default(false)
+  fundraising_timeline        String?
+  round_type                  String?    // pre_seed | seed | series_a | series_b | other
+  target_raise_usd            BigInt?
+  minimum_raise_usd           BigInt?
+  committed_so_far_usd        BigInt?
+  round_structure             String?    // priced | safe | convertible_note | other
+  use_of_funds                String?
+  pre_money_valuation_usd     BigInt?
+  post_money_valuation_usd    BigInt?
+  valuation_cap_usd           BigInt?
+  min_check_size_usd          Int?
+  max_check_size_usd          Int?
+  pro_rata_rights             Boolean?
+  board_seat_allocation       String?
+  target_close_date           DateTime?  @db.Date
+  data_room_status            String?
+
+  // §11 Investor Preferences
+  ideal_investor_types        String[]   @default([])
+  investor_involvement_pref   String?
+  value_add_priorities        Json       @default("[]")  // [{value_type, rank}]
+  specific_expertise_needed   String?
+  geography_pref_for_investors String?
+  investor_deal_breakers      String[]   @default([])
+
+  // §12 Consultant Needs
+  currently_seeking_consultants Boolean  @default(false)
+  consultant_needs              Json      @default("[]")  // [{area, urgency, budget_available}]
+  engagement_model_pref         String?
+  consulting_budget_band        String?
+  consulting_timeline           String?
+
+  // §13 Matching Preferences
+  discovery_preference          String?
+  profile_visibility            String?
+  match_algorithm_weights       Json      @default("[]")
+  notification_threshold        String?
+  smart_notification_triggers   String[]  @default([])
+
+  // §14 Pitch Materials
+  executive_summary_url         String?
+  product_demo_video_url        String?
+  video_pitch_url               String?
+  one_pager_url                 String?
+
+  // §15 IP & Technology
+  ip_types                      String[]  @default([])
+  tech_stack_summary            String?
+  product_roadmap_highlights    String?
+
+  created_at                    DateTime  @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  updated_at                    DateTime  @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  organizations                 organizations @relation(fields: [org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@schema("public")
+}
+
+/// Full advisor/consultant onboarding answers.
+model advisor_onboarding_answers {
+  org_id String @id @db.Uuid
+
+  // §1 Professional Identity
+  professional_title          String?
+  business_type               String?    // solo | small_2_5 | boutique_6_20 | midsize_21_50 | large_50_plus
+  years_in_consulting_band    String?
+  previous_experience_types   String[]   @default([])
+  // former_founder | former_exec | former_vc | career_consultant | academic | other
+
+  // §2 Expertise (jsonb: [{area, rank, years_exp, certifications}])
+  primary_expertise_areas     Json       @default("[]")
+  specific_skills             String?
+
+  // §3 Industry Expertise (jsonb: [{industry, expertise_level, years_in_industry}])
+  industry_expertise          Json       @default("[]")
+  industry_agnostic           Boolean    @default(false)
+
+  // §4 Services (jsonb: [{model, hourly_rate, project_rate_min, project_rate_max, monthly_retainer, typical_hours_per_week, typical_duration_weeks}])
+  service_delivery_models     Json       @default("[]")
+  engagement_length_pref      String?
+  typical_deliverables        String?
+
+  // §5 Track Record
+  career_highlights           String[]   @default([])
+  previous_roles              Json       @default("[]")  // [{company, title, years_from, years_to, accomplishments}]
+  education                   Json       @default("[]")  // [{degree, institution, field, year}]
+  certifications              String[]   @default([])
+  total_clients_served        Int?
+  client_types                String[]   @default([])
+  notable_clients             Json       @default("[]")  // [{company, industry, challenge, role, results, testimonial}]
+  revenue_growth_driven_usd   BigInt?
+  funding_raised_for_clients  BigInt?
+  cost_savings_usd            BigInt?
+  client_retention_pct        Int?
+  avg_engagement_months       Int?
+  published_work              Json       @default("[]")  // [{type: book|paper|blog, title, url}]
+  speaking_engagements        Json       @default("{}")
+  // {keynotes, workshops, webinars, university}
+  media_mentions              String[]   @default([])
+  linkedin_followers          Int?
+  awards                      String?
+
+  // §6 Ideal Client Profile
+  stage_preferences           Json       @default("[]")  // [{stage, works_with, prefer, min_project_usd}]
+  traction_requirement        String?
+  funding_status_pref         String?
+  team_size_pref              String?
+  geographic_pref             String[]   @default([])
+  work_location_pref          String?
+  project_scope_pref          String?
+  budget_min_usd              Int?
+  budget_sweet_spot_min       Int?
+  budget_sweet_spot_max       Int?
+  payment_structure_pref      String[]   @default([])
+  equity_consideration        String?
+  project_urgency             String?
+  current_capacity            String?    // available_now | 2-4wk | 1-2mo | waitlist | referrals_only
+  deal_breakers               String[]   @default([])
+
+  // §7 Investor Relations
+  investor_collaboration      String?
+  investor_services           String[]   @default([])
+  investor_engagement_model   String?
+  notable_investor_relations  String?
+
+  // §8 Matching Preferences
+  discovery_settings          Json       @default("{}")
+  inbound_inquiry_pref        String?
+  response_time_commitment    String?
+  match_algorithm_weights     Json       @default("[]")
+  notification_threshold      String?
+  notification_frequency      String?
+
+  // §9 Marketing & Positioning
+  headline                    String?
+  professional_bio            String?
+  consulting_philosophy       String?
+  differentiators             String?
+  case_studies                Json       @default("[]")  // [{client, industry, challenge, approach, results, timeline, testimonial}]
+  testimonials                Json       @default("[]")  // [{client_name, role, testimonial, linkedin_link}]
+  professional_references     Json       @default("[]")  // [{name, company, relationship, email}]
+
+  // §10 Legal & Commercial
+  legal_structure             String?
+  tax_id                      String?
+  standard_agreement          String?
+  hours_per_week_available    Int?
+  preferred_working_hours     String?
+  rate_card                   Json       @default("[]")  // [{service_type, rate, min_engagement}]
+  payment_terms               String?
+  cancellation_policy         String?
+
+  // §11 Platform Engagement
+  activity_level              String?
+  content_contributions       String[]   @default([])
+  lead_generation_goal        String?
+  target_quarterly_revenue    String?
+
+  created_at                  DateTime   @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  updated_at                  DateTime   @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  organizations               organizations @relation(fields: [org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@schema("public")
+}
+
+/// Computed profile/readiness score for an org (0-100). Updated on profile changes.
+model org_profile_scores {
+  org_id                      String        @id @db.Uuid
+  overall_score               Int           @default(0) @db.SmallInt
+  onboarding_score            Int           @default(0) @db.SmallInt  // 40% weight
+  profile_score               Int           @default(0) @db.SmallInt  // 35% weight
+  verification_score          Int           @default(0) @db.SmallInt  // 15% weight
+  activity_score              Int           @default(0) @db.SmallInt  // 10% weight
+  missing_fields              String[]      @default([])
+  score_details               Json          @default("{}")
+  calculated_at               DateTime      @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  organizations               organizations @relation(fields: [org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@schema("public")
+}
+
+// =============================================================================
+// §5 — BILLING & SUBSCRIPTIONS
+// =============================================================================
+
 model billing_plan_catalog {
   id                    String                  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   segment               org_type
-  plan_code             String
+  plan_code             String                  // free | pro | elite
   display_name          String
-  plan_tier             Int
+  plan_tier             Int                     // 0=free, 1=pro, 2=elite
+  monthly_price_usd     Int                     @default(0)
+  annual_price_usd      Int                     @default(0)
+  success_fee_pct       String?                 // stored as rate schedule JSON string
+  platform_fee_pct      String?                 // stored as rate schedule JSON string
   is_default            Boolean                 @default(false)
   is_active             Boolean                 @default(true)
   is_public             Boolean                 @default(true)
@@ -83,8 +748,6 @@ model billing_plan_catalog {
   @@schema("public")
 }
 
-/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
-/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
 model billing_plan_features {
   id                   String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   plan_id              String               @db.Uuid
@@ -104,14 +767,13 @@ model billing_plan_features {
   @@schema("public")
 }
 
-/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
-/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
 model billing_plan_prices {
   id                   String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   plan_id              String               @db.Uuid
   billing_interval     billing_interval
   amount_cents         Int
   currency             String               @default("USD")
+  stripe_price_id      String?
   created_at           DateTime             @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
   updated_at           DateTime             @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
   billing_plan_catalog billing_plan_catalog @relation(fields: [plan_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
@@ -121,7 +783,6 @@ model billing_plan_prices {
   @@schema("public")
 }
 
-/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model billing_webhook_events {
   id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   provider     String   @default("stripe")
@@ -138,8 +799,6 @@ model billing_webhook_events {
   @@schema("public")
 }
 
-/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
-/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
 model capabilities {
   code                       String                       @id
   description                String
@@ -152,29 +811,19 @@ model capabilities {
   @@schema("public")
 }
 
-/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
-/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
-model investor_profiles {
-  investor_org_id    String        @id @db.Uuid
-  website_url        String?
-  thesis             String?
-  stage_focus        String[]      @default([])
-  sector_tags        String[]      @default([])
-  check_size_min_usd BigInt?
-  check_size_max_usd BigInt?
-  created_at         DateTime      @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
-  updated_at         DateTime      @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
-  updated_by         String?       @db.Uuid
-  organizations      organizations @relation(fields: [investor_org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  users              users?        @relation(fields: [updated_by], references: [id], onUpdate: NoAction)
+model plan_capabilities {
+  plan_id              String               @db.Uuid
+  capability_code      String
+  is_enabled           Boolean              @default(true)
+  created_at           DateTime             @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  capabilities         capabilities         @relation(fields: [capability_code], references: [code], onDelete: Cascade, onUpdate: NoAction)
+  billing_plan_catalog billing_plan_catalog @relation(fields: [plan_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
-  @@index([updated_at(sort: Desc)])
+  @@id([plan_id, capability_code])
+  @@index([capability_code, plan_id], map: "plan_capabilities_capability_idx")
   @@schema("public")
 }
 
-/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
-/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
-/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
 model org_capabilities_overrides {
   org_id          String        @db.Uuid
   capability_code String
@@ -192,12 +841,10 @@ model org_capabilities_overrides {
   @@schema("public")
 }
 
-/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
-/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
 model org_feature_usage_counters {
   id            String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   org_id        String        @db.Uuid
-  feature_key   String
+  feature_key   String        // connect_requests_sent | warm_intros_sent | data_room_views | etc.
   period_start  DateTime      @db.Date
   period_end    DateTime      @db.Date
   usage_count   BigInt        @default(0)
@@ -211,70 +858,10 @@ model org_feature_usage_counters {
   @@schema("public")
 }
 
-/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
-/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
-/// This model contains an expression index which requires additional setup for migrations. Visit https://pris.ly/d/expression-indexes for more info.
-model org_invites {
-  id                                   String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  org_id                               String            @db.Uuid
-  invited_email                        String
-  member_role                          org_member_role   @default(member)
-  status                               org_invite_status @default(pending)
-  invited_by                           String            @db.Uuid
-  accepted_by                          String?           @db.Uuid
-  token_hash                           String            @unique
-  expires_at                           DateTime          @db.Timestamptz(6)
-  created_at                           DateTime          @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
-  responded_at                         DateTime?         @db.Timestamptz(6)
-  notes                                String?
-  users_org_invites_accepted_byTousers users?            @relation("org_invites_accepted_byTousers", fields: [accepted_by], references: [id], onUpdate: NoAction)
-  users_org_invites_invited_byTousers  users             @relation("org_invites_invited_byTousers", fields: [invited_by], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  organizations                        organizations     @relation(fields: [org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-
-  @@index([org_id, status, created_at(sort: Desc)], map: "org_invites_org_status_created_idx")
-  @@schema("public")
-}
-
-/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
-model org_members {
-  org_id                              String                @db.Uuid
-  user_id                             String                @unique(map: "org_members_single_org_per_user_idx") @db.Uuid
-  member_role                         org_member_role       @default(member)
-  created_at                          DateTime              @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
-  status                              org_membership_status @default(active)
-  invited_by                          String?               @db.Uuid
-  joined_at                           DateTime              @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
-  users_org_members_invited_byTousers users?                @relation("org_members_invited_byTousers", fields: [invited_by], references: [id], onUpdate: NoAction)
-  organizations                       organizations         @relation(fields: [org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  users_org_members_user_idTousers    users                 @relation("org_members_user_idTousers", fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-
-  @@id([org_id, user_id])
-  @@index([org_id, status], map: "org_members_org_status_idx")
-  @@index([user_id, status, created_at], map: "org_members_user_status_created_idx")
-  @@index([user_id, status, created_at, org_id], map: "org_members_user_status_created_org_idx")
-  @@schema("public")
-}
-
-/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
-model org_status {
-  org_id        String               @id @db.Uuid
-  status        org_lifecycle_status @default(active)
-  updated_by    String?              @db.Uuid
-  reason        String?
-  created_at    DateTime             @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
-  updated_at    DateTime             @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
-  organizations organizations        @relation(fields: [org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  users         users?               @relation(fields: [updated_by], references: [id], onUpdate: NoAction)
-
-  @@schema("public")
-}
-
-/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
-/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
 model org_subscription_accounts {
   org_id                String        @id @db.Uuid
   billing_email         String?
-  provider_customer_ref String?
+  provider_customer_ref String?       // Stripe customer ID
   metadata              Json          @default("{}")
   created_at            DateTime      @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
   updated_at            DateTime      @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
@@ -283,11 +870,9 @@ model org_subscription_accounts {
   @@schema("public")
 }
 
-/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
-/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
 model org_subscriptions {
   id                        String                      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  org_id                    String                      @unique(map: "org_subscriptions_single_current_idx", where: raw("(status = ANY (ARRAY['trialing'::billing_subscription_status, 'active'::billing_subscription_status, 'past_due'::billing_subscription_status, 'paused'::billing_subscription_status]))")) @db.Uuid
+  org_id                    String                      @db.Uuid
   plan_id                   String                      @db.Uuid
   status                    billing_subscription_status @default(active)
   billing_interval          billing_interval            @default(monthly)
@@ -297,124 +882,397 @@ model org_subscriptions {
   cancel_at_period_end      Boolean                     @default(false)
   canceled_at               DateTime?                   @db.Timestamptz(6)
   source                    String                      @default("manual")
-  external_subscription_ref String?
+  external_subscription_ref String?                     // Stripe subscription ID
+  trial_ends_at             DateTime?                   @db.Timestamptz(6)
   metadata                  Json                        @default("{}")
   created_at                DateTime                    @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
   updated_at                DateTime                    @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
   organizations             organizations               @relation(fields: [org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   billing_plan_catalog      billing_plan_catalog        @relation(fields: [plan_id], references: [id], onUpdate: NoAction)
 
+  @@unique([org_id], map: "org_subscriptions_single_active_idx", where: raw("(status = ANY (ARRAY['trialing'::billing_subscription_status, 'active'::billing_subscription_status, 'past_due'::billing_subscription_status, 'paused'::billing_subscription_status]))"))
   @@index([org_id, created_at(sort: Desc)], map: "org_subscriptions_org_created_idx")
   @@index([plan_id, status, current_period_end(sort: Desc)], map: "org_subscriptions_plan_status_idx")
   @@schema("public")
 }
 
-/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
-model org_verifications {
-  org_id        String                  @id @db.Uuid
-  status        org_verification_status @default(unverified)
-  reviewed_by   String?                 @db.Uuid
-  reviewed_at   DateTime?               @db.Timestamptz(6)
-  notes         String?
-  created_at    DateTime                @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
-  updated_at    DateTime                @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
-  organizations organizations           @relation(fields: [org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  users         users?                  @relation(fields: [reviewed_by], references: [id], onUpdate: NoAction)
+// =============================================================================
+// §6 — DISCOVERY & AI MATCHING
+// =============================================================================
+
+/// Who viewed whose profile and when (for analytics and interest signals).
+model discovery_profile_views {
+  id              String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  viewer_org_id   String        @db.Uuid
+  target_org_id   String        @db.Uuid
+  view_kind       profile_view_kind @default(discovery)
+  view_count      Int           @default(1)
+  last_viewed_at  DateTime      @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  total_seconds   Int           @default(0)
+  created_at      DateTime      @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  viewer_org      organizations @relation("discovery_views_given", fields: [viewer_org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  target_org      organizations @relation("discovery_views_received", fields: [target_org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([viewer_org_id, target_org_id, view_kind], map: "discovery_profile_views_unique")
+  @@index([target_org_id, last_viewed_at(sort: Desc)], map: "discovery_views_target_idx")
+  @@index([viewer_org_id, last_viewed_at(sort: Desc)], map: "discovery_views_viewer_idx")
+  @@schema("public")
+}
+
+/// Computed AI match score between two orgs (recalculated nightly / on profile change).
+model ai_match_scores {
+  id                String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  from_org_id       String        @db.Uuid
+  to_org_id         String        @db.Uuid
+  overall_score     Int           @db.SmallInt  // 0-100
+  score_breakdown   Json          @default("{}")
+  // {industry, stage, check_size, geography, business_model, traction, team_fit, value_add}
+  match_reasons     String[]      @default([])
+  disqualified      Boolean       @default(false)
+  disqualify_reason String?
+  calculated_at     DateTime      @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  from_org          organizations @relation("ai_match_from", fields: [from_org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  to_org            organizations @relation("ai_match_to", fields: [to_org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([from_org_id, to_org_id], map: "ai_match_scores_unique")
+  @@index([from_org_id, overall_score(sort: Desc)], map: "ai_match_scores_from_score_idx")
+  @@index([to_org_id, overall_score(sort: Desc)], map: "ai_match_scores_to_score_idx")
+  @@schema("public")
+}
+
+/// User's feedback on a match (for the learning algorithm).
+model ai_match_feedback {
+  id              String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  from_org_id     String              @db.Uuid
+  target_org_id   String              @db.Uuid
+  feedback_type   match_feedback_type
+  decline_reason  String?
+  created_at      DateTime            @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  from_org        organizations       @relation("ai_match_feedback_from", fields: [from_org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([from_org_id, target_org_id], map: "ai_match_feedback_unique")
+  @@index([from_org_id, created_at(sort: Desc)], map: "ai_match_feedback_from_idx")
+  @@schema("public")
+}
+
+/// Stored embeddings for an org profile (pgvector-ready).
+/// embedding_vector is JSON until pgvector migration is applied.
+model org_ai_embeddings {
+  id               String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  org_id           String        @db.Uuid
+  embedding_text   String
+  embedding_vector Json          @default("[]") // later: vector(1536)
+  embedding_model  String        @default("text-embedding-3-large")
+  created_at       DateTime      @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  updated_at       DateTime      @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  org              organizations @relation(fields: [org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([org_id], map: "org_ai_embeddings_org_unique")
+  @@index([updated_at(sort: Desc)], map: "org_ai_embeddings_updated_idx")
+  @@schema("public")
+}
+
+/// Async job queue for computing embeddings + match scores.
+model ai_embedding_jobs {
+  id          String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  org_id      String        @db.Uuid
+  status      String        @default("pending") // pending | running | succeeded | failed
+  attempts    Int           @default(0)
+  last_error  String?
+  run_after   DateTime?     @db.Timestamptz(6)
+  started_at  DateTime?     @db.Timestamptz(6)
+  finished_at DateTime?     @db.Timestamptz(6)
+  created_at  DateTime      @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  updated_at  DateTime      @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  org         organizations @relation(fields: [org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([status, run_after], map: "ai_embedding_jobs_status_run_after_idx")
+  @@index([org_id, created_at(sort: Desc)], map: "ai_embedding_jobs_org_created_idx")
+  @@schema("public")
+}
+
+/// Warm introduction request (startup or advisor requests platform to intro them to an investor).
+model warm_intro_requests {
+  id               String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  sender_org_id    String        @db.Uuid    // who is requesting the intro
+  receiver_org_id  String        @db.Uuid    // who they want to be introduced to
+  via_advisor_org_id String?     @db.Uuid    // optional: advisor co-signing the intro
+  message          String?
+  status           String        @default("pending")
+  // pending | accepted | declined | expired
+  response_note    String?
+  created_at       DateTime      @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  responded_at     DateTime?     @db.Timestamptz(6)
+  expires_at       DateTime?     @db.Timestamptz(6)
+  sender_org       organizations @relation("warm_intro_sender", fields: [sender_org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  receiver_org     organizations @relation("warm_intro_receiver", fields: [receiver_org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  via_advisor_org  organizations? @relation("warm_intro_via_advisor", fields: [via_advisor_org_id], references: [id], onUpdate: NoAction)
+
+  @@index([sender_org_id, status], map: "warm_intro_sender_status_idx")
+  @@index([receiver_org_id, status, created_at(sort: Desc)], map: "warm_intro_receiver_status_idx")
+  @@schema("public")
+}
+
+// =============================================================================
+// §7 — CONNECTIONS & MESSAGING
+// =============================================================================
+
+model connection_requests {
+  id           String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  from_org_id  String                    @db.Uuid
+  to_org_id    String                    @db.Uuid
+  status       connection_request_status @default(pending)
+  message      String?
+  created_at   DateTime                  @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  responded_at DateTime?                 @db.Timestamptz(6)
+  from_org     organizations             @relation("connection_requests_from_org", fields: [from_org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  to_org       organizations             @relation("connection_requests_to_org", fields: [to_org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([from_org_id, to_org_id], map: "connection_requests_from_to_unique")
+  @@index([to_org_id, status], map: "connection_requests_to_status_idx")
+  @@index([from_org_id, status], map: "connection_requests_from_status_idx")
+  @@schema("public")
+}
+
+model connections {
+  id         String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  org_a_id   String                @db.Uuid
+  org_b_id   String                @db.Uuid
+  created_at DateTime              @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  org_a      organizations         @relation("connections_org_a", fields: [org_a_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  org_b      organizations         @relation("connections_org_b", fields: [org_b_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  messages   connection_messages[]
+  deal_room  deal_rooms?
+
+  @@unique([org_a_id, org_b_id], map: "connections_orgs_unique")
+  @@index([org_a_id], map: "connections_org_a_idx")
+  @@index([org_b_id], map: "connections_org_b_idx")
+  @@schema("public")
+}
+
+model connection_messages {
+  id            String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  connection_id String        @db.Uuid
+  from_org_id   String        @db.Uuid
+  body          String
+  created_at    DateTime      @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  connection    connections   @relation(fields: [connection_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  from_org      organizations @relation(fields: [from_org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([connection_id, created_at(sort: Asc)], map: "connection_messages_connection_created_idx")
+  @@schema("public")
+}
+
+// =============================================================================
+// §8 — DEAL ROOM  (negotiation workspace)
+// =============================================================================
+
+/// Deal discussion request created when an investor starts a deal discussion with a startup.
+model deal_room_requests {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  startup_org_id String   @db.Uuid
+  investor_org_id String  @db.Uuid
+  initiated_by   String?  @db.Uuid
+  status         String   @default("pending")
+  message        String?
+  created_at     DateTime @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  responded_at   DateTime? @db.Timestamptz(6)
+  startup_org    organizations @relation("deal_room_requests_startup", fields: [startup_org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  investor_org   organizations @relation("deal_room_requests_investor", fields: [investor_org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([startup_org_id, investor_org_id], map: "deal_room_requests_unique_pair")
+  @@index([startup_org_id, status, created_at(sort: Desc)], map: "deal_room_requests_startup_status_idx")
+  @@index([investor_org_id, status, created_at(sort: Desc)], map: "deal_room_requests_investor_status_idx")
+  @@schema("public")
+}
+
+/// Deal Room: created when a startup and investor accept a connection.
+/// Also supports advisor participation (syndicate later).
+model deal_rooms {
+  id              String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  connection_id   String            @unique @db.Uuid
+  name            String?
+  stage           deal_room_stage   @default(interest)
+  description     String?
+  target_amount   BigInt?           // total capital sought (for syndicate tracking)
+  committed_total BigInt?           @default(0)
+  terms_accepted  Boolean           @default(false)
+  closed_at       DateTime?         @db.Timestamptz(6)
+  created_at      DateTime          @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  updated_at      DateTime          @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  connection      connections       @relation(fields: [connection_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  participants    deal_room_participants[]
+  messages        deal_room_messages[]
+  stage_history   deal_room_stage_history[]
+  commitments     deal_room_commitments[]
+  milestones      deal_room_milestones[]
+  agreements      deal_room_agreements[]
+  data_room_links deal_room_data_room_links[]
 
   @@schema("public")
 }
 
-/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
-/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
-model organizations {
-  id                          String                        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  type                        org_type
-  name                        String
-  location                    String?
-  industry_tags               String[]                      @default([])
-  created_at                  DateTime                      @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
-  updated_at                  DateTime                      @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
-  logo_url                    String?
-  advisor_profiles            advisor_profiles?
-  investor_profiles           investor_profiles?
-  org_capabilities_overrides  org_capabilities_overrides[]
-  org_feature_usage_counters  org_feature_usage_counters[]
-  org_invites                 org_invites[]
-  org_members                 org_members[]
-  org_status                  org_status?
-  org_subscription_accounts   org_subscription_accounts?
-  org_subscriptions           org_subscriptions?
-  org_verifications           org_verifications?
-  startup_data_room_documents startup_data_room_documents[]
-  startup_posts               startup_posts?
-  startup_profiles            startup_profiles?
-  connection_requests_from    connection_requests[]         @relation("connection_requests_from_org")
-  connection_requests_to      connection_requests[]         @relation("connection_requests_to_org")
-  connections_org_a          connections[]                 @relation("connections_org_a")
-  connections_org_b           connections[]                 @relation("connections_org_b")
-  connection_messages        connection_messages[]
+/// Who participates in a deal room and in which role.
+model deal_room_participants {
+  id            String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  deal_room_id  String                    @db.Uuid
+  org_id        String                    @db.Uuid
+  role          deal_room_participant_role
+  invited_at    DateTime                  @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  accepted_at   DateTime?                 @db.Timestamptz(6)
+  left_at       DateTime?                 @db.Timestamptz(6)
+  deal_room     deal_rooms                @relation(fields: [deal_room_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  organizations organizations             @relation(fields: [org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
-  @@index([type, created_at(sort: Desc)], map: "organizations_type_created_idx")
+  @@unique([deal_room_id, org_id], map: "deal_room_participants_unique")
+  @@index([deal_room_id, role], map: "deal_room_participants_room_role_idx")
   @@schema("public")
 }
 
-/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
-/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
-model plan_capabilities {
-  plan_id              String               @db.Uuid
-  capability_code      String
-  is_enabled           Boolean              @default(true)
-  created_at           DateTime             @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
-  capabilities         capabilities         @relation(fields: [capability_code], references: [code], onDelete: Cascade, onUpdate: NoAction)
-  billing_plan_catalog billing_plan_catalog @relation(fields: [plan_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+/// Chat messages inside the deal room.
+model deal_room_messages {
+  id           String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  deal_room_id String      @db.Uuid
+  sender_user_id String    @db.Uuid
+  body         String
+  attachment_url String?
+  attachment_name String?
+  is_ai_summary  Boolean   @default(false)
+  created_at   DateTime    @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  deal_room    deal_rooms  @relation(fields: [deal_room_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  sender       users       @relation(fields: [sender_user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
-  @@id([plan_id, capability_code])
-  @@index([capability_code, plan_id], map: "plan_capabilities_capability_idx")
+  @@index([deal_room_id, created_at(sort: Asc)], map: "deal_room_messages_room_created_idx")
   @@schema("public")
 }
 
-/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
-/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
-model profiles {
-  id                          String    @id @db.Uuid
-  full_name                   String?
-  location                    String?
-  bio                         String?
-  avatar_url                  String?
-  created_at                  DateTime? @default(now()) @db.Timestamptz(6)
-  updated_at                  DateTime? @default(now()) @db.Timestamptz(6)
-  phone                       String?
-  headline                    String?
-  website_url                 String?
-  linkedin_url                String?
-  timezone_name               String?
-  preferred_contact_method    String?
-  profile_completeness_percent Int?     @db.SmallInt
-  users                       users     @relation(fields: [id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+/// Audit trail of deal stage changes.
+model deal_room_stage_history {
+  id           String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  deal_room_id String          @db.Uuid
+  from_stage   deal_room_stage?
+  to_stage     deal_room_stage
+  changed_by   String?         @db.Uuid
+  note         String?
+  created_at   DateTime        @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  deal_room    deal_rooms      @relation(fields: [deal_room_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
+  @@index([deal_room_id, created_at(sort: Desc)], map: "deal_room_stage_history_idx")
   @@schema("public")
 }
 
-/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
-/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
-/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+/// Investor commitment records (amount + conditions).
+model deal_room_commitments {
+  id              String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  deal_room_id    String        @db.Uuid
+  investor_org_id String        @db.Uuid
+  amount_usd      BigInt
+  conditions      String?
+  notes           String?
+  status          String        @default("soft")
+  // soft | confirmed | withdrawn
+  committed_at    DateTime      @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  updated_at      DateTime      @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  deal_room       deal_rooms    @relation(fields: [deal_room_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([deal_room_id, status], map: "deal_room_commitments_room_status_idx")
+  @@schema("public")
+}
+
+/// Milestone tracker inside the deal room (AI can assist).
+model deal_room_milestones {
+  id           String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  deal_room_id String      @db.Uuid
+  title        String
+  description  String?
+  due_date     DateTime?   @db.Date
+  completed_at DateTime?   @db.Timestamptz(6)
+  sort_order   Int         @default(0)
+  created_at   DateTime    @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  deal_room    deal_rooms  @relation(fields: [deal_room_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([deal_room_id, sort_order], map: "deal_room_milestones_room_order_idx")
+  @@schema("public")
+}
+
+/// Deal agreements / term sheets (standard template or custom).
+model deal_room_agreements {
+  id           String                       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  deal_room_id String                       @db.Uuid
+  title        String
+  template_key String?                      // standard_term_sheet | nda | mou | custom
+  content_text String?                      // rendered agreement body
+  file_url     String?                      // optional: uploaded signed PDF
+  status       deal_room_agreement_status   @default(draft)
+  signed_by    Json                         @default("[]")  // [{org_id, signed_at}]
+  created_at   DateTime                     @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  updated_at   DateTime                     @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  deal_room    deal_rooms                   @relation(fields: [deal_room_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([deal_room_id, status], map: "deal_room_agreements_room_status_idx")
+  @@schema("public")
+}
+
+/// Links a deal room to a startup's data room (for due diligence access).
+model deal_room_data_room_links {
+  id                String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  deal_room_id      String      @db.Uuid
+  startup_org_id    String      @db.Uuid
+  terms_accepted_at DateTime?   @db.Timestamptz(6)
+  created_at        DateTime    @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  deal_room         deal_rooms  @relation(fields: [deal_room_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([deal_room_id, startup_org_id], map: "deal_room_data_room_links_unique")
+  @@schema("public")
+}
+
+// =============================================================================
+// §9 — DATA ROOM  (document vault + access control + analytics)
+// =============================================================================
+
+/// Logical folders within a startup's data room (replaces flat folder_path string).
+model startup_data_room_folders {
+  id             String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  startup_org_id String        @db.Uuid
+  name           String
+  parent_id      String?       @db.Uuid  // null = root folder
+  sort_order     Int           @default(0)
+  created_at     DateTime      @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  updated_at     DateTime      @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  organizations  organizations @relation(fields: [startup_org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  parent         startup_data_room_folders?  @relation("folder_children", fields: [parent_id], references: [id], onUpdate: NoAction)
+  children       startup_data_room_folders[] @relation("folder_children")
+  documents      startup_data_room_documents[]
+
+  @@index([startup_org_id, parent_id], map: "startup_dr_folders_org_parent_idx")
+  @@schema("public")
+}
+
+/// Documents stored in a startup's data room.
 model startup_data_room_documents {
   id                  String                          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   startup_org_id      String                          @db.Uuid
+  folder_id           String?                         @db.Uuid
+  folder_path         String?                         // legacy flat path (kept for backward compat)
   document_type       startup_data_room_document_type
   title               String
   file_url            String?
+  storage_bucket      String?
+  storage_object_path String?
   file_name           String?
   file_size_bytes     BigInt?
   content_type        String?
   summary             String?
+  is_confidential     Boolean                         @default(true)
+  watermark_enabled   Boolean                         @default(true)
+  download_enabled    Boolean                         @default(false)
   uploaded_by         String?                         @db.Uuid
   created_at          DateTime                        @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
   updated_at          DateTime                        @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
-  storage_bucket      String?
-  storage_object_path String?
   organizations       organizations                   @relation(fields: [startup_org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   users               users?                          @relation(fields: [uploaded_by], references: [id], onUpdate: NoAction)
+  folder              startup_data_room_folders?      @relation(fields: [folder_id], references: [id], onUpdate: NoAction)
+  document_views      data_room_document_views[]
 
   @@unique([startup_org_id, document_type], map: "startup_data_room_documents_org_type_unique")
   @@index([startup_org_id, updated_at(sort: Desc)], map: "startup_data_room_documents_org_updated_idx")
@@ -422,8 +1280,508 @@ model startup_data_room_documents {
   @@schema("public")
 }
 
-/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
-/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+/// Audit log of every data room action (upload, delete, folder create, view, etc.).
+model startup_data_room_audit_logs {
+  id                  String                          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  startup_org_id      String                          @db.Uuid
+  action              String                          // folder_created | document_upserted | document_deleted | access_granted | access_revoked | terms_accepted
+  folder_path         String?
+  document_id         String?                         @db.Uuid
+  document_type       startup_data_room_document_type?
+  title               String?
+  file_url            String?
+  storage_bucket      String?
+  storage_object_path String?
+  file_name           String?
+  file_size_bytes     BigInt?
+  content_type        String?
+  summary             String?
+  actor_user_id       String?                         @db.Uuid
+  metadata            Json                            @default("{}")
+  created_at          DateTime                        @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  organizations       organizations                   @relation(fields: [startup_org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  users               users?                          @relation(fields: [actor_user_id], references: [id], onUpdate: NoAction)
+
+  @@index([startup_org_id, created_at(sort: Desc)], map: "startup_data_room_audit_logs_org_created_idx")
+  @@index([startup_org_id, folder_path], map: "startup_data_room_audit_logs_org_folder_idx")
+  @@schema("public")
+}
+
+/// Investor/advisor requests access to a startup's data room.
+model data_room_access_requests {
+  id              String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  startup_org_id  String                    @db.Uuid
+  requester_org_id String                   @db.Uuid
+  message         String?
+  status          data_room_access_status   @default(pending)
+  reviewed_at     DateTime?                 @db.Timestamptz(6)
+  review_note     String?
+  created_at      DateTime                  @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  startup_org     organizations             @relation("dr_access_owner", fields: [startup_org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  requester_org   organizations             @relation("dr_access_requester", fields: [requester_org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([startup_org_id, requester_org_id], map: "data_room_access_requests_unique")
+  @@index([startup_org_id, status], map: "data_room_access_requests_startup_status_idx")
+  @@schema("public")
+}
+
+/// Approved data room access record.
+model data_room_access_grants {
+  id                String                  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  startup_org_id    String                  @db.Uuid
+  grantee_org_id    String                  @db.Uuid
+  permission_level  data_room_permission_level @default(view)
+  terms_accepted_at DateTime?               @db.Timestamptz(6)
+  granted_at        DateTime                @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  revoked_at        DateTime?               @db.Timestamptz(6)
+  expires_at        DateTime?               @db.Timestamptz(6)
+  organizations     organizations           @relation(fields: [startup_org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([startup_org_id, grantee_org_id], map: "data_room_access_grants_unique")
+  @@index([grantee_org_id, revoked_at], map: "data_room_access_grants_grantee_idx")
+  @@schema("public")
+}
+
+/// Recorded Data Room consent (ToS) by a granted org.
+model data_room_consents {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  startup_org_id String   @db.Uuid
+  grantee_org_id String   @db.Uuid
+  consented_at   DateTime @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  ip_address     String?
+  user_agent     String?
+  created_at     DateTime @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  updated_at     DateTime @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+
+  startup_org organizations @relation("dr_consent_startup", fields: [startup_org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  grantee_org organizations @relation("dr_consent_grantee", fields: [grantee_org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([startup_org_id, grantee_org_id], map: "data_room_consents_unique_pair")
+  @@index([startup_org_id, consented_at(sort: Desc)], map: "data_room_consents_startup_idx")
+  @@index([grantee_org_id, consented_at(sort: Desc)], map: "data_room_consents_grantee_idx")
+  @@schema("public")
+}
+
+/// Document-level view analytics (who viewed what, when, how long).
+model data_room_document_views {
+  id              String                       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  document_id     String                       @db.Uuid
+  viewer_org_id   String                       @db.Uuid
+  view_count      Int                          @default(1)
+  total_seconds   Int                          @default(0)
+  last_viewed_at  DateTime                     @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  created_at      DateTime                     @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  document        startup_data_room_documents  @relation(fields: [document_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  viewer_org      organizations                @relation(fields: [viewer_org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([document_id, viewer_org_id], map: "data_room_document_views_unique")
+  @@index([document_id, last_viewed_at(sort: Desc)], map: "data_room_document_views_doc_idx")
+  @@schema("public")
+}
+
+// =============================================================================
+// §10 — SYNDICATES  (co-investor groups, Elite only)
+// =============================================================================
+
+/// A syndicate led by an investor to pool capital for a single startup deal.
+model syndicates {
+  id              String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  lead_org_id     String            @db.Uuid
+  startup_org_id  String?           @db.Uuid  // target startup (if deal-specific)
+  name            String
+  description     String?
+  target_amount   BigInt?
+  minimum_check   BigInt?
+  status          syndicate_status  @default(forming)
+  visibility      String            @default("private")
+  // private | platform | public
+  closed_at       DateTime?         @db.Timestamptz(6)
+  created_at      DateTime          @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  updated_at      DateTime          @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  lead_org        organizations     @relation(fields: [lead_org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  members         syndicate_members[]
+  invites         syndicate_invites[]
+
+  @@index([lead_org_id, status], map: "syndicates_lead_status_idx")
+  @@index([startup_org_id], map: "syndicates_startup_idx")
+  @@schema("public")
+}
+
+/// Members of a syndicate.
+model syndicate_members {
+  id            String                  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  syndicate_id  String                  @db.Uuid
+  org_id        String                  @db.Uuid
+  committed_usd BigInt?
+  status        syndicate_member_status @default(invited)
+  joined_at     DateTime?               @db.Timestamptz(6)
+  created_at    DateTime                @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  syndicate     syndicates              @relation(fields: [syndicate_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  organizations organizations           @relation(fields: [org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([syndicate_id, org_id], map: "syndicate_members_unique")
+  @@index([org_id, status], map: "syndicate_members_org_status_idx")
+  @@schema("public")
+}
+
+/// Pending invitations to join a syndicate.
+model syndicate_invites {
+  id            String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  syndicate_id  String      @db.Uuid
+  invitee_org_id String     @db.Uuid
+  message       String?
+  status        String      @default("pending")
+  // pending | accepted | declined | expired
+  expires_at    DateTime?   @db.Timestamptz(6)
+  created_at    DateTime    @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  responded_at  DateTime?   @db.Timestamptz(6)
+  syndicate     syndicates  @relation(fields: [syndicate_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([syndicate_id, invitee_org_id], map: "syndicate_invites_unique")
+  @@index([invitee_org_id, status], map: "syndicate_invites_invitee_idx")
+  @@schema("public")
+}
+
+// =============================================================================
+// §11 — PAYMENTS & FEES
+// =============================================================================
+
+/// All payment transactions (subscription, success fees, escrow releases, etc.).
+model payment_transactions {
+  id                  String                      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  org_id              String                      @db.Uuid
+  transaction_type    String                      // subscription | success_fee | escrow_release | refund | other
+  amount_cents        BigInt
+  currency            String                      @default("USD")
+  status              payment_transaction_status  @default(pending)
+  provider            String                      @default("stripe")
+  provider_payment_id String?                     // Stripe payment intent ID
+  provider_invoice_id String?
+  description         String?
+  metadata            Json                        @default("{}")
+  failed_reason       String?
+  created_at          DateTime                    @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  updated_at          DateTime                    @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  organizations       organizations               @relation(fields: [org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([org_id, created_at(sort: Desc)], map: "payment_transactions_org_created_idx")
+  @@index([provider, provider_payment_id], map: "payment_transactions_provider_id_idx")
+  @@schema("public")
+}
+
+/// Tracks success fees owed when a deal closes (due 12 months from intro date).
+model success_fee_records {
+  id                  String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  payer_org_id        String        @db.Uuid    // who owes the fee (startup or consultant)
+  deal_room_id        String?       @db.Uuid
+  intro_date          DateTime      @db.Date
+  fee_trigger         String        // capital_raised | consulting_contract
+  gross_amount_usd    BigInt        // deal/capital amount
+  fee_rate_pct_x100   Int           // rate * 100 (e.g. 350 = 3.5%)
+  fee_amount_usd      BigInt
+  status              String        @default("pending")
+  // pending | invoiced | paid | waived | disputed
+  due_date            DateTime?     @db.Date
+  paid_at             DateTime?     @db.Timestamptz(6)
+  notes               String?
+  metadata            Json          @default("{}")
+  created_at          DateTime      @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  updated_at          DateTime      @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  organizations       organizations @relation(fields: [payer_org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([payer_org_id, status], map: "success_fee_records_payer_status_idx")
+  @@schema("public")
+}
+
+// =============================================================================
+// §12 — NOTIFICATIONS
+// =============================================================================
+
+/// In-app notifications (connection requests, acceptances, deal room, etc.).
+model notifications {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id    String    @db.Uuid
+  type       String    // connection_request | connection_accepted | deal_room_created | deal_room_message | data_room_access_request | data_room_access_granted | milestone_completed | new_match | payment_received | etc.
+  title      String
+  body       String?
+  link       String?
+  action_id  String?   // reference ID for quick action (e.g. connection_request id)
+  read_at    DateTime? @db.Timestamptz(6)
+  created_at DateTime  @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  users      users     @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([user_id, read_at], map: "notifications_user_read_idx")
+  @@index([user_id, created_at(sort: Desc)], map: "notifications_user_created_idx")
+  @@schema("public")
+}
+
+// =============================================================================
+// §13 — SECURITY  (2FA, device tracking, audit events)
+// =============================================================================
+
+/// Two-factor authentication settings per user.
+model user_two_factor_settings {
+  id            String                  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id       String                  @db.Uuid
+  method        user_two_factor_method
+  is_enabled    Boolean                 @default(false)
+  secret_hash   String?                 // TOTP secret (hashed/encrypted)
+  phone_number  String?                 // for SMS
+  backup_codes  String[]                @default([])
+  // hashed backup codes
+  verified_at   DateTime?               @db.Timestamptz(6)
+  created_at    DateTime                @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  updated_at    DateTime                @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  users         users                   @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([user_id, method], map: "user_two_factor_settings_unique")
+  @@schema("public")
+}
+
+/// Log of security-relevant events per user.
+model user_security_events {
+  id          String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id     String              @db.Uuid
+  event_type  security_event_type
+  ip_address  String?
+  user_agent  String?
+  country     String?
+  city        String?
+  device_id   String?             @db.Uuid
+  metadata    Json                @default("{}")
+  created_at  DateTime            @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  users       users               @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([user_id, created_at(sort: Desc)], map: "user_security_events_user_created_idx")
+  @@schema("public")
+}
+
+/// Known devices for a user (used to show "active sessions" in security settings).
+model user_devices {
+  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id       String    @db.Uuid
+  device_name   String?
+  device_type   String?   // mobile | tablet | desktop | other
+  user_agent    String?
+  ip_address    String?
+  country       String?
+  is_trusted    Boolean   @default(false)
+  last_seen_at  DateTime  @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  created_at    DateTime  @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  revoked_at    DateTime? @db.Timestamptz(6)
+  users         users     @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([user_id, last_seen_at(sort: Desc)], map: "user_devices_user_idx")
+  @@schema("public")
+}
+
+// =============================================================================
+// §14 — SUPPORT  (help desk + AI bot)
+// =============================================================================
+
+/// Help & Support tickets. AI bot handles first; escalates to human support.
+model support_tickets {
+  id              String                  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  org_id          String?                 @db.Uuid
+  user_id         String                  @db.Uuid
+  subject         String
+  category        String?                 // billing | account | data_room | deal_room | matching | other
+  status          support_ticket_status   @default(open)
+  priority        support_ticket_priority @default(medium)
+  assigned_to     String?                 // admin user id
+  ai_resolved     Boolean                 @default(false)
+  resolution_note String?
+  created_at      DateTime                @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  updated_at      DateTime                @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  resolved_at     DateTime?               @db.Timestamptz(6)
+  users           users                   @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  organizations   organizations?          @relation(fields: [org_id], references: [id], onUpdate: NoAction)
+  messages        support_messages[]
+
+  @@index([status, priority, created_at(sort: Desc)], map: "support_tickets_status_priority_idx")
+  @@index([user_id, status], map: "support_tickets_user_status_idx")
+  @@schema("public")
+}
+
+/// Messages in a support ticket thread.
+model support_messages {
+  id          String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ticket_id   String          @db.Uuid
+  sender_id   String          @db.Uuid
+  is_staff    Boolean         @default(false)
+  is_ai       Boolean         @default(false)
+  body        String
+  created_at  DateTime        @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  ticket      support_tickets @relation(fields: [ticket_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  users       users           @relation(fields: [sender_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([ticket_id, created_at(sort: Asc)], map: "support_messages_ticket_created_idx")
+  @@schema("public")
+}
+
+/// AI chatbot session (help & support widget conversations).
+model ai_chat_sessions {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id        String    @db.Uuid
+  context        String?   // help | deal_room | data_room | matching
+  messages       Json      @default("[]")  // [{role: user|assistant, content, created_at}]
+  escalated      Boolean   @default(false)
+  escalated_at   DateTime? @db.Timestamptz(6)
+  ticket_id      String?   @db.Uuid
+  created_at     DateTime  @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  updated_at     DateTime  @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  users          users     @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([user_id, created_at(sort: Desc)], map: "ai_chat_sessions_user_created_idx")
+  @@schema("public")
+}
+
+/// Per-user notification channel preferences and type overrides.
+model user_notification_preferences {
+  user_id          String   @id @db.Uuid
+  in_app_enabled   Boolean  @default(true)
+  email_enabled    Boolean  @default(true)
+  telegram_enabled Boolean  @default(false)
+  telegram_chat_id String?
+  type_overrides   Json     @default("{}") // { [type]: { in_app?: boolean, email?: boolean, telegram?: boolean } }
+  created_at       DateTime @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  updated_at       DateTime @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  users            users    @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@schema("public")
+}
+
+// =============================================================================
+// §15 — ADMIN  (platform administrators)
+// =============================================================================
+
+/// Admin users with platform-level access.
+model admin_users {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id     String    @db.Uuid
+  role        String    @default("support")
+  // super_admin | admin | support | analyst
+  is_active   Boolean   @default(true)
+  granted_at  DateTime  @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  revoked_at  DateTime? @db.Timestamptz(6)
+  users       users     @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([user_id], map: "admin_users_user_unique")
+  @@schema("public")
+}
+
+/// Every admin action is recorded here.
+model admin_audit_logs {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  admin_id     String    @db.Uuid
+  action       String    // user_suspended | org_verified | subscription_changed | etc.
+  target_type  String?   // user | org | deal_room | ticket | etc.
+  target_id    String?
+  payload      Json      @default("{}")
+  ip_address   String?
+  created_at   DateTime  @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+
+  @@index([admin_id, created_at(sort: Desc)], map: "admin_audit_logs_admin_idx")
+  @@index([target_type, target_id, created_at(sort: Desc)], map: "admin_audit_logs_target_idx")
+  @@schema("public")
+}
+
+// =============================================================================
+// ROLE-SPECIFIC PROFILE TABLES  (expanded)
+// =============================================================================
+
+/// Investor organization profile (extended beyond onboarding answers for quick lookups).
+model investor_profiles {
+  investor_org_id         String        @id @db.Uuid
+  profile_type            String?       // angel_individual | vc_fund | family_office | etc.
+  website_url             String?
+  linkedin_url            String?
+  thesis                  String?
+  stage_focus             String[]      @default([])
+  sector_tags             String[]      @default([])
+  geographic_regions      String[]      @default([])
+  check_size_min_usd      BigInt?
+  check_size_max_usd      BigInt?
+  investment_approach     String?       // hands_on | strategic | passive | lead | follow_on
+  value_add_summary       String?
+  deal_breakers           String[]      @default([])
+  profile_visibility      String?       @default("public")
+  is_actively_investing   Boolean       @default(true)
+  created_at              DateTime      @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  updated_at              DateTime      @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  updated_by              String?       @db.Uuid
+  organizations           organizations @relation(fields: [investor_org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  users                   users?        @relation(fields: [updated_by], references: [id], onUpdate: NoAction)
+
+  @@index([updated_at(sort: Desc)])
+  @@schema("public")
+}
+
+/// Startup organization profile (extended fields for quick lookups and discovery).
+model startup_profiles {
+  startup_org_id       String        @id @db.Uuid
+  website_url          String?
+  team_overview        String?
+  company_stage        String?
+  founding_year        Int?
+  team_size            Int?
+  target_market        String?
+  business_model       String?
+  traction_summary     String?
+  financial_summary    String?
+  legal_summary        String?
+  mrr_usd              Int?
+  arr_usd              Int?
+  currently_fundraising Boolean      @default(false)
+  target_raise_usd     BigInt?
+  round_type           String?
+  pre_money_valuation_usd BigInt?
+  elevator_pitch       String?
+  problem_statement    String?
+  unique_advantage     String?
+  primary_industry     String?
+  product_status       String?
+  updated_at           DateTime      @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  updated_by           String?       @db.Uuid
+  created_at           DateTime      @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  organizations        organizations @relation(fields: [startup_org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  users                users?        @relation(fields: [updated_by], references: [id], onUpdate: NoAction)
+
+  @@index([updated_at(sort: Desc)])
+  @@schema("public")
+}
+
+/// Advisor/consultant organization profile.
+model advisor_profiles {
+  advisor_org_id       String        @id @db.Uuid
+  website_url          String?
+  linkedin_url         String?
+  bio                  String?
+  headline             String?
+  expertise_tags       String[]      @default([])
+  industry_tags        String[]      @default([])
+  years_experience     Int?
+  business_type        String?
+  current_capacity     String?
+  hourly_rate_usd      Int?
+  is_open_to_equity    Boolean       @default(false)
+  geographic_pref      String[]      @default([])
+  stage_pref           String[]      @default([])
+  profile_visibility   String?       @default("public")
+  created_at           DateTime      @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  updated_at           DateTime      @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
+  updated_by           String?       @db.Uuid
+  organizations        organizations @relation(fields: [advisor_org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  users                users?        @relation(fields: [updated_by], references: [id], onUpdate: NoAction)
+
+  @@index([updated_at(sort: Desc)])
+  @@schema("public")
+}
+
+// =============================================================================
+// STARTUP POSTS  (discovery feed posts)
+// =============================================================================
+
 model startup_posts {
   id                                    String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   startup_org_id                        String              @unique @db.Uuid
@@ -449,162 +1807,9 @@ model startup_posts {
   @@schema("public")
 }
 
-/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
-/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
-model startup_profiles {
-  startup_org_id    String        @id @db.Uuid
-  website_url       String?
-  team_overview     String?
-  created_at        DateTime      @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
-  updated_at        DateTime      @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
-  updated_by        String?       @db.Uuid
-  company_stage     String?
-  founding_year     Int?
-  team_size         Int?
-  target_market     String?
-  business_model    String?
-  traction_summary  String?
-  financial_summary String?
-  legal_summary     String?
-  organizations     organizations @relation(fields: [startup_org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  users             users?        @relation(fields: [updated_by], references: [id], onUpdate: NoAction)
-
-  @@index([updated_at(sort: Desc)])
-  @@schema("public")
-}
-
-/// Connect request: investor/advisor → startup. When accepted, a connection is created.
-model connection_requests {
-  id           String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  from_org_id  String                    @db.Uuid
-  to_org_id    String                    @db.Uuid
-  status       connection_request_status @default(pending)
-  message      String?
-  created_at   DateTime                  @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
-  responded_at DateTime?                 @db.Timestamptz(6)
-  from_org     organizations             @relation("connection_requests_from_org", fields: [from_org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  to_org       organizations             @relation("connection_requests_to_org", fields: [to_org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-
-  @@unique([from_org_id, to_org_id], map: "connection_requests_from_to_unique")
-  @@index([to_org_id, status], map: "connection_requests_to_status_idx")
-  @@index([from_org_id, status], map: "connection_requests_from_status_idx")
-  @@schema("public")
-}
-
-/// After a connection request is accepted, both sides share a connection and can message.
-model connections {
-  id         String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  org_a_id   String                @db.Uuid
-  org_b_id   String                @db.Uuid
-  created_at DateTime              @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
-  org_a      organizations         @relation("connections_org_a", fields: [org_a_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  org_b      organizations         @relation("connections_org_b", fields: [org_b_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  messages   connection_messages[]
-  deal_room  deal_rooms?
-
-  @@unique([org_a_id, org_b_id], map: "connections_orgs_unique")
-  @@index([org_a_id], map: "connections_org_a_idx")
-  @@index([org_b_id], map: "connections_org_b_idx")
-  @@schema("public")
-}
-
-/// Deal room created when a startup and an investor accept a connection.
-model deal_rooms {
-  id             String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  connection_id  String      @unique @db.Uuid
-  name           String?
-  created_at     DateTime    @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
-  connection     connections @relation(fields: [connection_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-
-  @@schema("public")
-}
-
-/// In-app notifications (connection requests, acceptances, deal room created, etc.).
-model notifications {
-  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  user_id    String    @db.Uuid
-  type       String
-  title      String
-  body       String?
-  link       String?
-  read_at    DateTime? @db.Timestamptz(6)
-  created_at DateTime  @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
-  users      users     @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-
-  @@index([user_id, read_at], map: "notifications_user_read_idx")
-  @@index([user_id, created_at(sort: Desc)], map: "notifications_user_created_idx")
-  @@schema("public")
-}
-
-model connection_messages {
-  id             String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  connection_id  String      @db.Uuid
-  from_org_id   String      @db.Uuid
-  body           String
-  created_at     DateTime    @default(dbgenerated("timezone('utc'::text, now())")) @db.Timestamptz(6)
-  connection     connections @relation(fields: [connection_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  from_org       organizations @relation(fields: [from_org_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-
-  @@index([connection_id, created_at(sort: Asc)], map: "connection_messages_connection_created_idx")
-  @@schema("public")
-}
-
-model accounts {
-  id                    String    @id
-  accountId             String
-  providerId            String
-  userId                String    @db.Uuid
-  accessToken           String?
-  refreshToken          String?
-  idToken               String?
-  accessTokenExpiresAt  DateTime? @db.Timestamptz(6)
-  refreshTokenExpiresAt DateTime? @db.Timestamptz(6)
-  scope                 String?
-  password              String?
-  createdAt             DateTime  @default(now()) @db.Timestamptz(6)
-  updatedAt             DateTime  @db.Timestamptz(6)
-  users                 users     @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
-
-  @@index([userId], map: "public.accounts_userId_idx")
-  @@schema("public")
-}
-
-model jwks {
-  id         String    @id
-  publicKey  String
-  privateKey String
-  createdAt  DateTime  @db.Timestamptz(6)
-  expiresAt  DateTime? @db.Timestamptz(6)
-
-  @@schema("public")
-}
-
-model sessions {
-  id        String   @id
-  expiresAt DateTime @db.Timestamptz(6)
-  token     String   @unique
-  createdAt DateTime @default(now()) @db.Timestamptz(6)
-  updatedAt DateTime @db.Timestamptz(6)
-  ipAddress String?
-  userAgent String?
-  userId    String   @db.Uuid
-  users     users    @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
-
-  @@index([userId], map: "public.sessions_userId_idx")
-  @@schema("public")
-}
-
-model verification {
-  id         String   @id
-  identifier String
-  value      String
-  expiresAt  DateTime @db.Timestamptz(6)
-  createdAt  DateTime @default(now()) @db.Timestamptz(6)
-  updatedAt  DateTime @default(now()) @db.Timestamptz(6)
-
-  @@index([identifier])
-  @@schema("public")
-}
+// =============================================================================
+// ENUMS
+// =============================================================================
 
 enum billing_interval {
   monthly
@@ -621,7 +1826,7 @@ enum billing_subscription_status {
   canceled
   incomplete
 
-  @@schema("public")  
+  @@schema("public")
 }
 
 enum org_invite_status {
@@ -678,21 +1883,6 @@ enum org_verification_status {
   @@schema("public")
 }
 
-enum startup_data_room_document_type {
-  pitch_deck
-  financial_model
-  cap_table
-  traction_metrics
-  legal_company_docs
-  incorporation_docs
-  customer_contracts_summaries
-  term_sheet_drafts
-  financial_doc
-  legal_doc
-
-  @@schema("public")
-}
-
 enum startup_post_status {
   draft
   published
@@ -704,6 +1894,166 @@ enum connection_request_status {
   pending
   accepted
   rejected
+
+  @@schema("public")
+}
+
+enum startup_data_room_document_type {
+  pitch_deck
+  financial_model
+  cap_table
+  traction_metrics
+  legal_company_docs
+  incorporation_docs
+  customer_contracts_summaries
+  term_sheet_drafts
+  financial_doc
+  legal_doc
+  executive_summary
+  product_roadmap
+  market_research
+  team_bios
+  nda_template
+  other
+
+  @@schema("public")
+}
+
+enum onboarding_step_status {
+  not_started
+  in_progress
+  completed
+  skipped
+
+  @@schema("public")
+}
+
+enum deal_room_stage {
+  interest
+  due_diligence
+  negotiation
+  commitment
+  closing
+  closed
+
+  @@schema("public")
+}
+
+enum deal_room_participant_role {
+  startup_founder
+  lead_investor
+  co_investor
+  advisor
+  observer
+
+  @@schema("public")
+}
+
+enum deal_room_agreement_status {
+  draft
+  review
+  signed
+  executed
+
+  @@schema("public")
+}
+
+enum data_room_access_status {
+  pending
+  approved
+  rejected
+  revoked
+
+  @@schema("public")
+}
+
+enum data_room_permission_level {
+  view
+  view_download
+
+  @@schema("public")
+}
+
+enum syndicate_status {
+  forming
+  active
+  closed
+  cancelled
+
+  @@schema("public")
+}
+
+enum syndicate_member_status {
+  invited
+  confirmed
+  declined
+  withdrew
+
+  @@schema("public")
+}
+
+enum support_ticket_status {
+  open
+  in_progress
+  resolved
+  closed
+
+  @@schema("public")
+}
+
+enum support_ticket_priority {
+  low
+  medium
+  high
+  urgent
+
+  @@schema("public")
+}
+
+enum payment_transaction_status {
+  pending
+  processing
+  completed
+  failed
+  refunded
+  disputed
+
+  @@schema("public")
+}
+
+enum match_feedback_type {
+  interested
+  not_interested
+  saved
+  passed
+
+  @@schema("public")
+}
+
+enum profile_view_kind {
+  discovery
+  detail
+  data_room
+
+  @@schema("public")
+}
+
+enum user_two_factor_method {
+  totp
+  sms
+  email
+
+  @@schema("public")
+}
+
+enum security_event_type {
+  login
+  logout
+  password_change
+  two_factor_enabled
+  two_factor_disabled
+  suspicious_activity
+  data_room_consent
 
   @@schema("public")
 }
