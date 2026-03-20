@@ -166,18 +166,6 @@ export class DataRoomController {
     }
   }
 
-  // v3 alias: GET /api/data-room/:startupOrgId
-  @Get(':startupOrgId')
-  @UseGuards(ReadinessGuard)
-  @RequiresTier('elite')
-  @UseGuards(TierGuard)
-  async contentsAlias(
-    @Req() req: RequestWithUser,
-    @Param('startupOrgId') startupOrgId: string,
-  ): Promise<any | { error: string }> {
-    return this.contents(req, startupOrgId);
-  }
-
   @Post('startups/:startupOrgId/terms/accept')
   @UseGuards(ReadinessGuard)
   @RequiresTier('elite')
@@ -254,16 +242,6 @@ export class DataRoomController {
       this.rethrowForbidden(e);
       return { error: e instanceof Error ? e.message : 'Failed to load analytics' };
     }
-  }
-
-  // v3 alias: GET /api/data-room/:startupOrgId/analytics
-  @Get(':startupOrgId/analytics')
-  @UseGuards(ReadinessGuard)
-  async analyticsAlias(
-    @Req() req: RequestWithUser,
-    @Param('startupOrgId') startupOrgId: string,
-  ): Promise<any[] | { error: string }> {
-    return this.analytics(req, startupOrgId);
   }
 }
 

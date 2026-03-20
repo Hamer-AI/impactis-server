@@ -94,11 +94,44 @@ export class AiMatchingService {
         }
         const embeddingText = parts.join('\n').slice(0, 20_000);
 
+        let embeddingVectorJson = '[]';
+        let embeddingModel = 'heuristic-v3';
+        const openaiKey = process.env.OPENAI_API_KEY?.trim();
+        if (openaiKey) {
+          try {
+            const embRes = await fetch('https://api.openai.com/v1/embeddings', {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${openaiKey}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                model: process.env.OPENAI_EMBEDDING_MODEL?.trim() || 'text-embedding-3-small',
+                input: embeddingText.slice(0, 8000),
+              }),
+            });
+            const embJson = (await embRes.json()) as {
+              data?: Array<{ embedding?: number[] }>;
+              error?: { message?: string };
+            };
+            const vec = embJson?.data?.[0]?.embedding;
+            if (Array.isArray(vec) && vec.length > 0) {
+              embeddingVectorJson = JSON.stringify(vec);
+              embeddingModel = process.env.OPENAI_EMBEDDING_MODEL?.trim() || 'text-embedding-3-small';
+            }
+          } catch {
+            // Keep heuristic-only row if OpenAI fails
+          }
+        }
+
         await tx.$queryRaw`
           insert into public.org_ai_embeddings (org_id, embedding_text, embedding_vector, embedding_model)
-          values (${job.org_id}::uuid, ${embeddingText}, '[]'::jsonb, 'heuristic-v3')
+          values (${job.org_id}::uuid, ${embeddingText}, ${embeddingVectorJson}::jsonb, ${embeddingModel})
           on conflict (org_id) do update
-          set embedding_text = excluded.embedding_text, updated_at = timezone('utc', now())
+          set embedding_text = excluded.embedding_text,
+              embedding_vector = excluded.embedding_vector,
+              embedding_model = excluded.embedding_model,
+              updated_at = timezone('utc', now())
         `;
 
         // Compute heuristic matches: opposite-type orgs only.

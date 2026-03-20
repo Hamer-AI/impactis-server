@@ -8,11 +8,13 @@ import type {
   AdminDealRoomView,
   AdminMeView,
   AdminOrgView,
+  AdminPlatformUserView,
   AdminStatsView,
   AdminSubscriptionView,
   AdminTicketView,
   AssignTicketInput,
   ForceOrgTierInput,
+  PatchAdminPlatformUserInput,
   UpsertCapabilityOverrideInput,
   UpdateOrgLifecycleInput,
 } from './admin.types';
@@ -38,6 +40,51 @@ export class AdminController {
   @Get('stats')
   async stats(): Promise<AdminStatsView> {
     return this.admin.getStats();
+  }
+
+  @Get('users')
+  async listUsers(
+    @Query('q') q?: string,
+    @Query('limit') limitRaw?: string,
+  ): Promise<AdminPlatformUserView[]> {
+    const limit = typeof limitRaw === 'string' ? Number.parseInt(limitRaw, 10) : 100;
+    return this.admin.listPlatformUsers({ q: q ?? null, limit: Number.isFinite(limit) ? limit : 100 });
+  }
+
+  @Get('users/:userId')
+  async userDetail(@Param('userId') userId: string): Promise<AdminPlatformUserView | { error: string }> {
+    const u = await this.admin.getPlatformUserDetail(userId);
+    if (!u) return { error: 'Not found' };
+    return u;
+  }
+
+  @Patch('users/:userId')
+  async patchUser(
+    @Req() req: RequestWithUser,
+    @Param('userId') userId: string,
+    @Body() input: PatchAdminPlatformUserInput,
+  ): Promise<{ success: boolean } | { error: string }> {
+    const user = req.user;
+    if (!user) return { error: 'Unauthorized' };
+    try {
+      return await this.admin.patchPlatformUser(user.id, userId, input);
+    } catch (e) {
+      return { error: e instanceof Error ? e.message : 'Failed to update user' };
+    }
+  }
+
+  @Post('users/:userId/revoke-sessions')
+  async revokeUserSessions(
+    @Req() req: RequestWithUser,
+    @Param('userId') userId: string,
+  ): Promise<{ success: boolean; deleted: number } | { error: string }> {
+    const user = req.user;
+    if (!user) return { error: 'Unauthorized' };
+    try {
+      return await this.admin.revokeUserSessions(user.id, userId);
+    } catch (e) {
+      return { error: e instanceof Error ? e.message : 'Failed to revoke sessions' };
+    }
   }
 
   @Get('orgs')

@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService, PrismaSqlExecutor } from '../prisma/prisma.service';
 import { AiMatchingService } from '../ai/ai-matching.service';
+import { UpstashRedisCacheService } from '../cache/upstash-redis-cache.service';
 import type {
   OnboardingMeView,
   OnboardingRole,
@@ -24,6 +25,7 @@ export class OnboardingService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly aiMatching: AiMatchingService,
+    private readonly cache: UpstashRedisCacheService,
   ) {}
 
   private normalizeOptionalText(value: string | null | undefined): string | null {
@@ -52,6 +54,18 @@ export class OnboardingService {
 
   private getExecutor(tx?: SqlExecutor): SqlExecutor {
     return tx ?? this.prisma;
+  }
+
+  private async invalidateWorkspaceCachesForUser(userId: string): Promise<void> {
+    try {
+      await this.cache.deleteMany([
+        this.cache.workspaceIdentityKey(userId),
+        this.cache.workspaceBootstrapKey(userId),
+        ...this.cache.workspaceSettingsSnapshotKeysForUser(userId),
+      ]);
+    } catch {
+      // Best-effort cache invalidation only.
+    }
   }
 
   private async resolveMembership(userId: string, tx?: SqlExecutor): Promise<MembershipContext> {
@@ -91,44 +105,156 @@ export class OnboardingService {
     };
   }
 
-  private assertStep1RequiredFields(role: OnboardingRole, values: Record<string, unknown>): void {
+  private hasStep1RequiredFields(role: OnboardingRole, values: Record<string, unknown>): boolean {
     const hasString = (key: string) =>
       typeof values[key] === 'string' && (values[key] as string).trim().length > 0;
+    const hasArray = (key: string) => Array.isArray(values[key]) && (values[key] as unknown[]).length > 0;
 
-    // Keep this permissive: require at least one strong identity field + one contact/link field.
     if (role === 'startup') {
-      const identityOk = hasString('legal_name') || hasString('trading_name') || hasString('company_name');
+      const identityOk =
+        hasString('legal_name')
+        || hasString('trading_name')
+        || hasString('company_name')
+        || hasString('companyName');
       const contactOk =
-        hasString('website') || hasString('website_url') || hasString('company_email') || hasString('linkedin_company_url');
-      if (!identityOk || !contactOk) {
-        throw new Error(
-          'Startup step 1 requires company identity (legal_name/trading_name) and a contact/link (website_url/company_email/linkedin_company_url).',
-        );
-      }
-      return;
+        hasString('website')
+        || hasString('website_url')
+        || hasString('websiteUrl')
+        || hasString('company_email')
+        || hasString('linkedin_company_url')
+        || hasString('country_of_incorporation')
+        || hasString('countryOfIncorporation');
+      return !!identityOk && !!contactOk;
     }
 
     if (role === 'investor') {
-      const identityOk = hasString('entity_name') || hasString('full_name') || hasString('primary_contact_name');
-      const contactOk = hasString('email') || hasString('linkedin_url') || hasString('website_url');
-      if (!identityOk || !contactOk) {
-        throw new Error(
-          'Investor step 1 requires identity (entity_name/full_name) and a contact/link (email/linkedin_url/website_url).',
-        );
-      }
-      return;
+      const identityOk =
+        hasString('entity_name')
+        || hasString('full_name')
+        || hasString('primary_contact_name')
+        || hasString('investing_years_band')
+        || hasString('investingYears');
+      const contactOk =
+        hasString('email')
+        || hasString('linkedin_url')
+        || hasString('website_url')
+        || hasString('total_investments_made_band')
+        || hasString('totalStartupInvestments');
+      return !!identityOk && !!contactOk;
     }
 
-    const identityOk = hasString('professional_title') || hasString('full_name') || hasString('firm_name');
-    const contactOk = hasString('email') || hasString('linkedin_url') || hasString('website_url');
-    if (!identityOk || !contactOk) {
-      throw new Error(
-        'Advisor step 1 requires identity (professional_title/full_name/firm_name) and a contact/link (email/linkedin_url/website_url).',
-      );
-    }
+    const identityOk =
+      hasString('professional_title')
+      || hasString('full_name')
+      || hasString('firm_name')
+      || hasString('business_type')
+      || hasString('businessType');
+    const contactOk =
+      hasString('email')
+      || hasString('linkedin_url')
+      || hasString('website_url')
+      || hasString('years_in_consulting_band')
+      || hasString('yearsConsulting')
+      || hasArray('previous_experience_types')
+      || hasArray('previousExperience');
+    return !!identityOk && !!contactOk;
   }
 
-  private async readStep1Completed(orgId: string, tx?: SqlExecutor): Promise<boolean> {
+  private assertStep1RequiredFields(role: OnboardingRole, values: Record<string, unknown>): void {
+    if (this.hasStep1RequiredFields(role, values)) {
+      return;
+    }
+    if (role === 'startup') {
+      throw new Error(
+        'Startup step 1 requires company identity and either a contact/link or country of incorporation.',
+      );
+    }
+    if (role === 'investor') {
+      throw new Error(
+        'Investor step 1 requires either profile identity fields or the experience fields from the onboarding wizard.',
+      );
+    }
+    throw new Error(
+      'Advisor step 1 requires either profile identity fields or the business/experience fields from the onboarding wizard.',
+    );
+  }
+
+  private async upsertUserOnboardingDetails(
+    userId: string,
+    organizationType: OnboardingRole,
+    details: Record<string, unknown>,
+    tx?: SqlExecutor,
+  ): Promise<void> {
+    const executor = this.getExecutor(tx);
+    const hasTable = await this.hasUserOnboardingDetailsTable(executor);
+    if (!hasTable) {
+      return;
+    }
+    const payload = JSON.stringify(details ?? {});
+    await executor.$queryRaw`
+      insert into public.user_onboarding_details (
+        user_id,
+        organization_type,
+        details,
+        updated_at
+      )
+      values (
+        ${userId}::uuid,
+        ${organizationType},
+        ${payload}::jsonb,
+        timezone('utc', now())
+      )
+      on conflict (user_id, organization_type) do update
+      set
+        details = coalesce(public.user_onboarding_details.details, '{}'::jsonb) || ${payload}::jsonb,
+        updated_at = timezone('utc', now())
+    `;
+  }
+
+  private async hasUserOnboardingDetailsTable(tx?: SqlExecutor): Promise<boolean> {
+    const executor = this.getExecutor(tx);
+    const rows = await executor.$queryRaw<
+      Array<{
+        regclass: string | null;
+      }>
+    >`
+      select to_regclass('public.user_onboarding_details')::text as regclass
+    `;
+    return !!this.normalizeOptionalText(rows[0]?.regclass ?? null);
+  }
+
+  private async markStep1Completed(orgId: string, tx?: SqlExecutor): Promise<void> {
+    const executor = this.getExecutor(tx);
+    await executor.$queryRaw`
+      insert into public.onboarding_progress (
+        org_id,
+        step_key,
+        step_number,
+        status,
+        completed_at,
+        updated_at
+      )
+      values (
+        ${orgId}::uuid,
+        'step1',
+        1,
+        'completed'::public.onboarding_step_status,
+        timezone('utc', now()),
+        timezone('utc', now())
+      )
+      on conflict (org_id, step_key) do update
+      set
+        status = excluded.status,
+        completed_at = excluded.completed_at,
+        updated_at = excluded.updated_at
+    `;
+  }
+
+  private async readStep1Completed(
+    userId: string,
+    membership: MembershipContext,
+    tx?: SqlExecutor,
+  ): Promise<boolean> {
     const executor = this.getExecutor(tx);
     const rows = await executor.$queryRaw<
       Array<{
@@ -137,12 +263,136 @@ export class OnboardingService {
     >`
       select p.status::text as status
       from public.onboarding_progress p
-      where p.org_id = ${orgId}::uuid
+      where p.org_id = ${membership.orgId}::uuid
         and p.step_key = 'step1'
       limit 1
     `;
     const status = this.normalizeOptionalText(rows[0]?.status ?? null)?.toLowerCase();
-    return status === 'completed';
+    if (status === 'completed') {
+      return true;
+    }
+
+    const hasDetailsTable = await this.hasUserOnboardingDetailsTable(executor);
+    if (hasDetailsTable) {
+      const detailsRows = await executor.$queryRaw<
+        Array<{
+          details: unknown;
+        }>
+      >`
+        select d.details
+        from public.user_onboarding_details d
+        where d.user_id = ${userId}::uuid
+          and d.organization_type = ${membership.orgType}
+        limit 1
+      `;
+      const details = detailsRows[0]?.details;
+      if (details && typeof details === 'object' && !Array.isArray(details)) {
+        if (this.hasStep1RequiredFields(membership.orgType, details as Record<string, unknown>)) {
+          await this.markStep1Completed(membership.orgId, executor);
+          return true;
+        }
+      }
+    }
+
+    if (membership.orgType === 'startup') {
+      const startupRows = await executor.$queryRaw<
+        Array<{
+          legal_name: string | null;
+          trading_name: string | null;
+          company_email: string | null;
+          linkedin_company_url: string | null;
+          country_of_incorporation: string | null;
+        }>
+      >`
+        select
+          s.legal_name,
+          s.trading_name,
+          s.company_email,
+          s.linkedin_company_url,
+          s.country_of_incorporation
+        from public.startup_onboarding_answers s
+        where s.org_id = ${membership.orgId}::uuid
+        limit 1
+      `;
+      const row = startupRows[0];
+      const completed = this.hasStep1RequiredFields(membership.orgType, {
+        legal_name: row?.legal_name ?? null,
+        trading_name: row?.trading_name ?? null,
+        company_email: row?.company_email ?? null,
+        linkedin_company_url: row?.linkedin_company_url ?? null,
+        country_of_incorporation: row?.country_of_incorporation ?? null,
+      });
+      if (completed) {
+        await this.markStep1Completed(membership.orgId, executor);
+      }
+      return completed;
+    }
+
+    if (membership.orgType === 'investor') {
+      const investorRows = await executor.$queryRaw<
+        Array<{
+          entity_name: string | null;
+          primary_contact_name: string | null;
+          linkedin_url: string | null;
+          website_url: string | null;
+          investing_years_band: string | null;
+          total_investments_made_band: string | null;
+        }>
+      >`
+        select
+          i.entity_name,
+          i.primary_contact_name,
+          i.linkedin_url,
+          i.website_url,
+          i.investing_years_band,
+          i.total_investments_made_band
+        from public.investor_onboarding_answers i
+        where i.org_id = ${membership.orgId}::uuid
+        limit 1
+      `;
+      const row = investorRows[0];
+      const completed = this.hasStep1RequiredFields(membership.orgType, {
+        entity_name: row?.entity_name ?? null,
+        primary_contact_name: row?.primary_contact_name ?? null,
+        linkedin_url: row?.linkedin_url ?? null,
+        website_url: row?.website_url ?? null,
+        investing_years_band: row?.investing_years_band ?? null,
+        total_investments_made_band: row?.total_investments_made_band ?? null,
+      });
+      if (completed) {
+        await this.markStep1Completed(membership.orgId, executor);
+      }
+      return completed;
+    }
+
+    const advisorRows = await executor.$queryRaw<
+      Array<{
+        professional_title: string | null;
+        business_type: string | null;
+        years_in_consulting_band: string | null;
+        previous_experience_types: string[] | null;
+      }>
+    >`
+      select
+        a.professional_title,
+        a.business_type,
+        a.years_in_consulting_band,
+        a.previous_experience_types
+      from public.advisor_onboarding_answers a
+      where a.org_id = ${membership.orgId}::uuid
+      limit 1
+    `;
+    const row = advisorRows[0];
+    const completed = this.hasStep1RequiredFields(membership.orgType, {
+      professional_title: row?.professional_title ?? null,
+      business_type: row?.business_type ?? null,
+      years_in_consulting_band: row?.years_in_consulting_band ?? null,
+      previous_experience_types: row?.previous_experience_types ?? [],
+    });
+    if (completed) {
+      await this.markStep1Completed(membership.orgId, executor);
+    }
+    return completed;
   }
 
   private async readRawUserMetaOnboarding(userId: string, tx?: SqlExecutor): Promise<Record<string, unknown> | null> {
@@ -170,7 +420,7 @@ export class OnboardingService {
     tx?: SqlExecutor,
   ): Promise<void> {
     const executor = this.getExecutor(tx);
-    const step1Completed = await this.readStep1Completed(membership.orgId, executor);
+    const step1Completed = await this.readStep1Completed(userId, membership, executor);
     if (step1Completed) {
       return;
     }
@@ -286,7 +536,7 @@ export class OnboardingService {
     const executor = this.getExecutor(tx);
 
     const [step1Completed, profileRow, verificationRow] = await Promise.all([
-      this.readStep1Completed(membership.orgId, executor),
+      this.readStep1Completed(userId, membership, executor),
       executor.$queryRaw<
         Array<{
           full_name: string | null;
@@ -326,14 +576,18 @@ export class OnboardingService {
     const onboardingScore = step1Completed ? 100 : 0;
     if (!step1Completed) missingBlocking.push('onboarding.step1');
 
-    const profileFields = [
+    // Readiness gating: require only core profile fields for access.
+    // `profile.avatar_url` is optional (non-blocking) because users should be able to
+    // complete onboarding + use core features without uploading an avatar.
+    const profileFieldsAll = [
       { key: 'profile.full_name', ok: this.normalizeOptionalText(profile?.full_name) },
       { key: 'profile.avatar_url', ok: this.normalizeOptionalText(profile?.avatar_url) },
       { key: 'profile.bio', ok: this.normalizeOptionalText(profile?.bio) },
     ];
-    const filledProfileCount = profileFields.filter((f) => !!f.ok).length;
-    const profileScore = Math.round((filledProfileCount / profileFields.length) * 100);
-    for (const f of profileFields) {
+    const profileFieldsBlocking = profileFieldsAll.filter((f) => f.key !== 'profile.avatar_url');
+    const filledProfileCount = profileFieldsBlocking.filter((f) => !!f.ok).length;
+    const profileScore = Math.round((filledProfileCount / profileFieldsBlocking.length) * 100);
+    for (const f of profileFieldsBlocking) {
       if (!f.ok) missingBlocking.push(f.key);
     }
 
@@ -355,7 +609,7 @@ export class OnboardingService {
     const scoreDetails: Record<string, unknown> = {
       weights: { onboarding: 0.5, profile: 0.5, verification: 0.0, activity: 0.0 },
       verification_status: verificationStatus,
-      profile_fields: profileFields.map((f) => ({ key: f.key, filled: !!f.ok })),
+      profile_fields: profileFieldsAll.map((f) => ({ key: f.key, filled: !!f.ok })),
       non_blocking_missing: missingNonBlocking,
     };
 
@@ -439,60 +693,8 @@ export class OnboardingService {
 
   async getScoreForUser(userId: string): Promise<OrgScoreSnapshot | null> {
     const membership = await this.resolveMembership(userId);
-    const rows = await this.prisma.$queryRaw<
-      Array<{
-        overall_score: number | string | null;
-        onboarding_score: number | string | null;
-        profile_score: number | string | null;
-        verification_score: number | string | null;
-        activity_score: number | string | null;
-        missing_fields: string[] | null;
-        score_details: Record<string, unknown> | null;
-        calculated_at: string | Date | null;
-      }>
-    >`
-      select
-        overall_score,
-        onboarding_score,
-        profile_score,
-        verification_score,
-        activity_score,
-        missing_fields,
-        score_details,
-        calculated_at
-      from public.org_profile_scores
-      where org_id = ${membership.orgId}::uuid
-      limit 1
-    `;
-
-    const row = rows[0];
-    if (!row) {
-      return null;
-    }
-
-    const toInt = (v: number | string | null | undefined) => {
-      if (typeof v === 'number' && Number.isFinite(v)) return Math.trunc(v);
-      if (typeof v === 'string') {
-        const parsed = Number.parseInt(v, 10);
-        return Number.isFinite(parsed) ? parsed : 0;
-      }
-      return 0;
-    };
-
-    const calculatedAt = row.calculated_at;
-    const calculatedIso =
-      calculatedAt instanceof Date ? calculatedAt.toISOString() : this.normalizeOptionalText(calculatedAt ?? null);
-
-    return {
-      overall_score: Math.max(0, Math.min(100, toInt(row.overall_score))),
-      onboarding_score: Math.max(0, Math.min(100, toInt(row.onboarding_score))),
-      profile_score: Math.max(0, Math.min(100, toInt(row.profile_score))),
-      verification_score: Math.max(0, Math.min(100, toInt(row.verification_score))),
-      activity_score: Math.max(0, Math.min(100, toInt(row.activity_score))),
-      missing_fields: Array.isArray(row.missing_fields) ? row.missing_fields : [],
-      score_details: row.score_details ?? {},
-      calculated_at: calculatedIso,
-    };
+    await this.ensureDbOnboardingFromLegacyMeta(userId, membership);
+    return this.computeAndPersistScores(userId, membership);
   }
 
   async getOnboardingMeForUser(userId: string): Promise<OnboardingMeView> {
@@ -500,8 +702,8 @@ export class OnboardingService {
     await this.ensureDbOnboardingFromLegacyMeta(userId, membership);
 
     const [step1Completed, scores] = await Promise.all([
-      this.readStep1Completed(membership.orgId),
-      this.getScoreForUser(userId),
+      this.readStep1Completed(userId, membership),
+      this.computeAndPersistScores(userId, membership),
     ]);
 
     return this.buildMeView(userId, membership, step1Completed, scores);
@@ -641,13 +843,15 @@ export class OnboardingService {
     `;
 
     const scores = await this.computeAndPersistScores(userId, membership);
-    const step1Completed = await this.readStep1Completed(membership.orgId);
+    const step1Completed = await this.readStep1Completed(userId, membership);
 
     try {
       await this.aiMatching.enqueueOrg(membership.orgId);
     } catch {
       // ignore AI enqueue failures
     }
+
+    await this.invalidateWorkspaceCachesForUser(userId);
 
     return this.buildMeView(userId, membership, step1Completed, scores);
   }
@@ -660,10 +864,22 @@ export class OnboardingService {
       throw new Error('Onboarding role does not match your organization type');
     }
 
+    console.log(
+      '[onboarding-step1][api]',
+      JSON.stringify({
+        userId,
+        orgId: membership.orgId,
+        orgType: membership.orgType,
+        role: input.role,
+        values: input.values ?? {},
+      }),
+    );
+
     this.assertStep1RequiredFields(input.role, input.values);
 
     await this.prisma.$transaction(async (tx) => {
       await this.ensureDbOnboardingFromLegacyMeta(userId, membership, tx);
+      await this.upsertUserOnboardingDetails(userId, input.role, input.values ?? {}, tx);
 
       // Write step1 values into the role-specific onboarding table (upsert).
       const payload = JSON.stringify(input.values ?? {});
@@ -677,12 +893,14 @@ export class OnboardingService {
           update public.startup_onboarding_answers
           set
             elevator_pitch = coalesce(elevator_pitch, (${payload}::jsonb ->> 'elevator_pitch')),
-            legal_name = coalesce(legal_name, (${payload}::jsonb ->> 'legal_name')),
-            trading_name = coalesce(trading_name, (${payload}::jsonb ->> 'trading_name')),
+            legal_name = coalesce(legal_name, (${payload}::jsonb ->> 'legal_name'), (${payload}::jsonb ->> 'company_name'), (${payload}::jsonb ->> 'companyName')),
+            trading_name = coalesce(trading_name, (${payload}::jsonb ->> 'trading_name'), (${payload}::jsonb ->> 'company_name'), (${payload}::jsonb ->> 'companyName')),
             company_email = coalesce(company_email, (${payload}::jsonb ->> 'company_email')),
             product_demo_link = coalesce(product_demo_link, (${payload}::jsonb ->> 'product_demo_link')),
             primary_office_location = coalesce(primary_office_location, (${payload}::jsonb ->> 'primary_office_location')),
-            country_of_incorporation = coalesce(country_of_incorporation, (${payload}::jsonb ->> 'country_of_incorporation')),
+            country_of_incorporation = coalesce(country_of_incorporation, (${payload}::jsonb ->> 'country_of_incorporation'), (${payload}::jsonb ->> 'countryOfIncorporation')),
+            company_stage_band = coalesce(company_stage_band, (${payload}::jsonb ->> 'company_stage_band'), (${payload}::jsonb ->> 'company_stage'), (${payload}::jsonb ->> 'companyStage')),
+            primary_industry = coalesce(primary_industry, (${payload}::jsonb ->> 'primary_industry'), (${payload}::jsonb ->> 'industry')),
             updated_at = timezone('utc', now())
           where org_id = ${membership.orgId}::uuid
         `;
@@ -700,6 +918,9 @@ export class OnboardingService {
             title_role = coalesce(title_role, (${payload}::jsonb ->> 'title_role')),
             linkedin_url = coalesce(linkedin_url, (${payload}::jsonb ->> 'linkedin_url')),
             website_url = coalesce(website_url, (${payload}::jsonb ->> 'website_url')),
+            investing_years_band = coalesce(investing_years_band, (${payload}::jsonb ->> 'investing_years_band'), (${payload}::jsonb ->> 'investingYears')),
+            total_investments_made_band = coalesce(total_investments_made_band, (${payload}::jsonb ->> 'total_investments_made_band'), (${payload}::jsonb ->> 'totalStartupInvestments')),
+            notable_exits = coalesce(notable_exits, (${payload}::jsonb ->> 'notable_exits'), (${payload}::jsonb ->> 'notableExits')),
             updated_at = timezone('utc', now())
           where org_id = ${membership.orgId}::uuid
         `;
@@ -713,8 +934,17 @@ export class OnboardingService {
           update public.advisor_onboarding_answers
           set
             professional_title = coalesce(professional_title, (${payload}::jsonb ->> 'professional_title')),
+            business_type = coalesce(business_type, (${payload}::jsonb ->> 'business_type'), (${payload}::jsonb ->> 'businessType')),
+            years_in_consulting_band = coalesce(years_in_consulting_band, (${payload}::jsonb ->> 'years_in_consulting_band'), (${payload}::jsonb ->> 'yearsConsulting')),
             headline = coalesce(headline, (${payload}::jsonb ->> 'headline')),
             professional_bio = coalesce(professional_bio, (${payload}::jsonb ->> 'professional_bio')),
+            previous_experience_types = case
+              when jsonb_typeof(${payload}::jsonb -> 'previous_experience_types') = 'array'
+                then array(select jsonb_array_elements_text(${payload}::jsonb -> 'previous_experience_types'))
+              when jsonb_typeof(${payload}::jsonb -> 'previousExperience') = 'array'
+                then array(select jsonb_array_elements_text(${payload}::jsonb -> 'previousExperience'))
+              else previous_experience_types
+            end,
             updated_at = timezone('utc', now())
           where org_id = ${membership.orgId}::uuid
         `;
@@ -746,13 +976,15 @@ export class OnboardingService {
     });
 
     const scores = await this.computeAndPersistScores(userId, membership);
-    const step1Completed = await this.readStep1Completed(membership.orgId);
+    const step1Completed = await this.readStep1Completed(userId, membership);
 
     try {
       await this.aiMatching.enqueueOrg(membership.orgId);
     } catch {
       // ignore AI enqueue failures
     }
+
+    await this.invalidateWorkspaceCachesForUser(userId);
 
     return this.buildMeView(userId, membership, step1Completed, scores);
   }
@@ -768,6 +1000,7 @@ export class OnboardingService {
 
     await this.prisma.$transaction(async (tx) => {
       await this.ensureDbOnboardingFromLegacyMeta(userId, membership, tx);
+      await this.upsertUserOnboardingDetails(userId, input.role, answers, tx);
 
       if (input.role === 'startup') {
         await tx.$queryRaw`
@@ -778,6 +1011,25 @@ export class OnboardingService {
         await tx.$queryRaw`
           update public.startup_onboarding_answers
           set
+            legal_name = coalesce(legal_name, (${payload}::jsonb ->> 'legal_name'), (${payload}::jsonb ->> 'company_name'), (${payload}::jsonb ->> 'companyName')),
+            trading_name = coalesce(trading_name, (${payload}::jsonb ->> 'trading_name'), (${payload}::jsonb ->> 'company_name'), (${payload}::jsonb ->> 'companyName')),
+            country_of_incorporation = coalesce(country_of_incorporation, (${payload}::jsonb ->> 'country_of_incorporation'), (${payload}::jsonb ->> 'countryOfIncorporation')),
+            company_stage_band = coalesce(company_stage_band, (${payload}::jsonb ->> 'company_stage_band'), (${payload}::jsonb ->> 'company_stage'), (${payload}::jsonb ->> 'companyStage')),
+            primary_industry = coalesce(primary_industry, (${payload}::jsonb ->> 'primary_industry'), (${payload}::jsonb ->> 'industry')),
+            problem_statement = coalesce(problem_statement, (${payload}::jsonb ->> 'problem_statement'), (${payload}::jsonb ->> 'problemStatement')),
+            solution_statement = coalesce(solution_statement, (${payload}::jsonb ->> 'solution_statement'), (${payload}::jsonb ->> 'solution')),
+            unique_advantage = coalesce(unique_advantage, (${payload}::jsonb ->> 'unique_advantage'), (${payload}::jsonb ->> 'uniqueValueProposition')),
+            waitlist_count = coalesce(waitlist_count, nullif((${payload}::jsonb ->> 'waitlist_count'), '')::integer, nullif((${payload}::jsonb ->> 'waitlistSize'), '')::integer),
+            mrr_usd = coalesce(mrr_usd, nullif((${payload}::jsonb ->> 'mrr_usd'), '')::integer, nullif((${payload}::jsonb ->> 'mrrUsd'), '')::integer),
+            revenue_growth_rate_mom_pct = coalesce(revenue_growth_rate_mom_pct, nullif((${payload}::jsonb ->> 'revenue_growth_rate_mom_pct'), '')::integer, nullif((${payload}::jsonb ->> 'momGrowthPercent'), '')::integer),
+            cac_usd = coalesce(cac_usd, nullif((${payload}::jsonb ->> 'cac_usd'), '')::integer, nullif((${payload}::jsonb ->> 'cacUsd'), '')::integer),
+            ltv_usd = coalesce(ltv_usd, nullif((${payload}::jsonb ->> 'ltv_usd'), '')::integer, nullif((${payload}::jsonb ->> 'ltvUsd'), '')::integer),
+            churn_rate_pct = coalesce(churn_rate_pct, nullif((${payload}::jsonb ->> 'churn_rate_pct'), '')::integer, nullif((${payload}::jsonb ->> 'churnRatePercent'), '')::integer),
+            total_paying_customers = coalesce(total_paying_customers, nullif((${payload}::jsonb ->> 'total_paying_customers'), '')::integer, nullif((${payload}::jsonb ->> 'totalCustomers'), '')::integer),
+            co_founders_count = coalesce(co_founders_count, nullif((${payload}::jsonb ->> 'co_founders_count'), '')::integer, nullif((${payload}::jsonb ->> 'numberOfFounders'), '')::integer),
+            round_type = coalesce(round_type, (${payload}::jsonb ->> 'round_type'), (${payload}::jsonb ->> 'fundingRoundType')),
+            target_raise_usd = coalesce(target_raise_usd, nullif((${payload}::jsonb ->> 'target_raise_usd'), '')::bigint, nullif((${payload}::jsonb ->> 'amountRaisingUsd'), '')::bigint),
+            committed_so_far_usd = coalesce(committed_so_far_usd, nullif((${payload}::jsonb ->> 'committed_so_far_usd'), '')::bigint, nullif((${payload}::jsonb ->> 'amountCommittedUsd'), '')::bigint),
             founders_data = coalesce(founders_data, '[]'::jsonb) || coalesce(${payload}::jsonb -> 'founders_data', '[]'::jsonb),
             advisors_data = coalesce(advisors_data, '[]'::jsonb) || coalesce(${payload}::jsonb -> 'advisors_data', '[]'::jsonb),
             match_algorithm_weights = coalesce(${payload}::jsonb -> 'match_algorithm_weights', match_algorithm_weights),
@@ -794,6 +1046,36 @@ export class OnboardingService {
         await tx.$queryRaw`
           update public.investor_onboarding_answers
           set
+            investing_years_band = coalesce(investing_years_band, (${payload}::jsonb ->> 'investing_years_band'), (${payload}::jsonb ->> 'investingYears')),
+            total_investments_made_band = coalesce(total_investments_made_band, (${payload}::jsonb ->> 'total_investments_made_band'), (${payload}::jsonb ->> 'totalStartupInvestments')),
+            notable_exits = coalesce(notable_exits, (${payload}::jsonb ->> 'notable_exits'), (${payload}::jsonb ->> 'notableExits')),
+            check_size_band = coalesce(check_size_band, (${payload}::jsonb ->> 'check_size_band'), (${payload}::jsonb ->> 'typicalCheckSize')),
+            total_investable_capital_band = coalesce(total_investable_capital_band, (${payload}::jsonb ->> 'total_investable_capital_band'), (${payload}::jsonb ->> 'investableCapital12mo')),
+            new_investments_12mo_band = coalesce(new_investments_12mo_band, (${payload}::jsonb ->> 'new_investments_12mo_band'), (${payload}::jsonb ->> 'investmentsPlanned')),
+            investment_structures = case
+              when jsonb_typeof(${payload}::jsonb -> 'investment_structures') = 'array'
+                then array(select jsonb_array_elements_text(${payload}::jsonb -> 'investment_structures'))
+              when jsonb_typeof(${payload}::jsonb -> 'preferredStructure') = 'array'
+                then array(select jsonb_array_elements_text(${payload}::jsonb -> 'preferredStructure'))
+              else investment_structures
+            end,
+            geographic_regions = case
+              when jsonb_typeof(${payload}::jsonb -> 'geographic_regions') = 'array'
+                then array(select jsonb_array_elements_text(${payload}::jsonb -> 'geographic_regions'))
+              when jsonb_typeof(${payload}::jsonb -> 'targetRegions') = 'array'
+                then array(select jsonb_array_elements_text(${payload}::jsonb -> 'targetRegions'))
+              else geographic_regions
+            end,
+            remote_team_openness = coalesce(remote_team_openness, (${payload}::jsonb ->> 'remote_team_openness'), (${payload}::jsonb ->> 'remoteTeamPreference')),
+            investment_approach = coalesce(investment_approach, (${payload}::jsonb ->> 'investment_approach'), (${payload}::jsonb ->> 'investmentStyle')),
+            value_add_offerings = case
+              when jsonb_typeof(${payload}::jsonb -> 'value_add_offerings') = 'array'
+                then array(select jsonb_array_elements_text(${payload}::jsonb -> 'value_add_offerings'))
+              when jsonb_typeof(${payload}::jsonb -> 'valueAddBeyondCapital') = 'array'
+                then array(select jsonb_array_elements_text(${payload}::jsonb -> 'valueAddBeyondCapital'))
+              else value_add_offerings
+            end,
+            diversity_priority = coalesce(diversity_priority, (${payload}::jsonb ->> 'diversity_priority'), (${payload}::jsonb ->> 'founderDiversityFocus')),
             stage_preferences = coalesce(${payload}::jsonb -> 'stage_preferences', stage_preferences),
             industry_preferences = coalesce(${payload}::jsonb -> 'industry_preferences', industry_preferences),
             match_algorithm_weights = coalesce(${payload}::jsonb -> 'match_algorithm_weights', match_algorithm_weights),
@@ -811,6 +1093,33 @@ export class OnboardingService {
         await tx.$queryRaw`
           update public.advisor_onboarding_answers
           set
+            business_type = coalesce(business_type, (${payload}::jsonb ->> 'business_type'), (${payload}::jsonb ->> 'businessType')),
+            years_in_consulting_band = coalesce(years_in_consulting_band, (${payload}::jsonb ->> 'years_in_consulting_band'), (${payload}::jsonb ->> 'yearsConsulting')),
+            previous_experience_types = case
+              when jsonb_typeof(${payload}::jsonb -> 'previous_experience_types') = 'array'
+                then array(select jsonb_array_elements_text(${payload}::jsonb -> 'previous_experience_types'))
+              when jsonb_typeof(${payload}::jsonb -> 'previousExperience') = 'array'
+                then array(select jsonb_array_elements_text(${payload}::jsonb -> 'previousExperience'))
+              else previous_experience_types
+            end,
+            client_types = case
+              when jsonb_typeof(${payload}::jsonb -> 'client_types') = 'array'
+                then array(select jsonb_array_elements_text(${payload}::jsonb -> 'client_types'))
+              when jsonb_typeof(${payload}::jsonb -> 'clientTypesServed') = 'array'
+                then array(select jsonb_array_elements_text(${payload}::jsonb -> 'clientTypesServed'))
+              else client_types
+            end,
+            total_clients_served = coalesce(total_clients_served, nullif((${payload}::jsonb ->> 'total_clients_served'), '')::integer, nullif((${payload}::jsonb ->> 'clientsServedCount'), '')::integer),
+            revenue_growth_driven_usd = coalesce(revenue_growth_driven_usd, nullif((${payload}::jsonb ->> 'revenue_growth_driven_usd'), '')::bigint, nullif((${payload}::jsonb ->> 'revenueGrowthUsd'), '')::bigint),
+            funding_raised_for_clients = coalesce(funding_raised_for_clients, nullif((${payload}::jsonb ->> 'funding_raised_for_clients'), '')::bigint, nullif((${payload}::jsonb ->> 'fundingRaisedUsd'), '')::bigint),
+            geographic_pref = case
+              when jsonb_typeof(${payload}::jsonb -> 'geographic_pref') = 'array'
+                then array(select jsonb_array_elements_text(${payload}::jsonb -> 'geographic_pref'))
+              when jsonb_typeof(${payload}::jsonb -> 'preferredGeography') = 'array'
+                then array(select jsonb_array_elements_text(${payload}::jsonb -> 'preferredGeography'))
+              else geographic_pref
+            end,
+            engagement_length_pref = coalesce(engagement_length_pref, (${payload}::jsonb ->> 'engagement_length_pref'), (${payload}::jsonb ->> 'engagementLengthPreference')),
             primary_expertise_areas = coalesce(${payload}::jsonb -> 'primary_expertise_areas', primary_expertise_areas),
             industry_expertise = coalesce(${payload}::jsonb -> 'industry_expertise', industry_expertise),
             case_studies = coalesce(${payload}::jsonb -> 'case_studies', case_studies),
@@ -850,7 +1159,8 @@ export class OnboardingService {
     });
 
     const scores = await this.computeAndPersistScores(userId, membership);
-    const step1Completed = await this.readStep1Completed(membership.orgId);
+    const step1Completed = await this.readStep1Completed(userId, membership);
+    await this.invalidateWorkspaceCachesForUser(userId);
     return this.buildMeView(userId, membership, step1Completed, scores);
   }
 }

@@ -161,14 +161,15 @@ export class DataRoomService {
     const r = inserted[0];
     if (!r) throw new Error('Failed to create access request');
 
-    const link = `${APP_ORIGIN.replace(/\/+$/, '')}/workspace/data-room`;
+    const inAppDataRoomPath = '/workspace/data-room';
+    const absoluteDataRoomUrl = `${APP_ORIGIN.replace(/\/+$/, '')}${inAppDataRoomPath}`;
     const title = `${requesterName} requested Data Room access`;
     const body = `You have a new Data Room access request from ${requesterName}. Review it in your Data Room settings.`;
     await this.notifications.createForOrg(startupOrgId, {
       type: 'data_room_access_request',
       title,
       body,
-      link,
+      link: inAppDataRoomPath,
     });
     const startupMembers = await this.getOrgMemberEmails(startupOrgId);
     for (const m of startupMembers) {
@@ -176,8 +177,8 @@ export class DataRoomService {
         await this.mailer.send({
           to: m.email.trim(),
           subject: title,
-          text: `${body}\n\nOpen: ${link}`,
-          html: `<p>${body}</p><p><a href="${link}">Open Data Room</a></p>`,
+          text: `${body}\n\nOpen: ${absoluteDataRoomUrl}`,
+          html: `<p>${body}</p><p><a href="${absoluteDataRoomUrl}">Open Data Room</a></p>`,
         });
       }
     }
@@ -350,14 +351,15 @@ export class DataRoomService {
     const g = grantRows[0];
     if (!g) throw new Error('Failed to create grant');
 
-    const link = `${APP_ORIGIN.replace(/\/+$/, '')}/workspace/data-room`;
+    const inAppDataRoomPath = '/workspace/data-room';
+    const absoluteDataRoomUrl = `${APP_ORIGIN.replace(/\/+$/, '')}${inAppDataRoomPath}`;
     const title = `Data Room access approved`;
     const body = `Your request to access the Data Room has been approved by ${ctx.orgId}.`;
     await this.notifications.createForOrg(req.requester_org_id, {
       type: 'data_room_access_granted',
       title,
       body,
-      link,
+      link: inAppDataRoomPath,
     });
     const requesterMembers = await this.getOrgMemberEmails(req.requester_org_id);
     for (const m of requesterMembers) {
@@ -365,8 +367,8 @@ export class DataRoomService {
         await this.mailer.send({
           to: m.email.trim(),
           subject: title,
-          text: `Your Data Room access request was approved.\n\nOpen: ${link}`,
-          html: `<p>Your Data Room access request was approved.</p><p><a href="${link}">Open Data Room</a></p>`,
+          text: `Your Data Room access request was approved.\n\nOpen: ${absoluteDataRoomUrl}`,
+          html: `<p>Your Data Room access request was approved.</p><p><a href="${absoluteDataRoomUrl}">Open Data Room</a></p>`,
         });
       }
     }
@@ -417,14 +419,15 @@ export class DataRoomService {
       where id = ${requestId}::uuid
     `;
 
-    const link = `${APP_ORIGIN.replace(/\/+$/, '')}/workspace/data-room`;
+    const inAppDataRoomPath = '/workspace/data-room';
+    const absoluteDataRoomUrl = `${APP_ORIGIN.replace(/\/+$/, '')}${inAppDataRoomPath}`;
     const title = `Data Room access request rejected`;
     const body = `Your Data Room access request was rejected.`;
     await this.notifications.createForOrg(r.requester_org_id, {
       type: 'data_room_access_rejected',
       title,
       body,
-      link,
+      link: inAppDataRoomPath,
     });
     const members = await this.getOrgMemberEmails(r.requester_org_id);
     for (const m of members) {
@@ -432,8 +435,8 @@ export class DataRoomService {
         await this.mailer.send({
           to: m.email.trim(),
           subject: title,
-          text: `${body}\n\nOpen: ${link}`,
-          html: `<p>${body}</p><p><a href="${link}">Open</a></p>`,
+          text: `${body}\n\nOpen: ${absoluteDataRoomUrl}`,
+          html: `<p>${body}</p><p><a href="${absoluteDataRoomUrl}">Open</a></p>`,
         });
       }
     }
@@ -625,12 +628,13 @@ export class DataRoomService {
       set revoked_at = timezone('utc', now())
       where id = ${grantId}::uuid
     `;
-    const link = `${APP_ORIGIN.replace(/\/+$/, '')}/workspace/data-room`;
+    const inAppDataRoomPath = '/workspace/data-room';
+    const absoluteDataRoomUrl = `${APP_ORIGIN.replace(/\/+$/, '')}${inAppDataRoomPath}`;
     await this.notifications.createForOrg(g.grantee_org_id, {
       type: 'data_room_access_revoked',
       title: 'Data Room access revoked',
       body: note ? `Access was revoked: ${note}` : 'Your Data Room access was revoked.',
-      link,
+      link: inAppDataRoomPath,
     });
     const members = await this.getOrgMemberEmails(g.grantee_org_id);
     for (const m of members) {
@@ -638,8 +642,8 @@ export class DataRoomService {
         await this.mailer.send({
           to: m.email.trim(),
           subject: 'Data Room access revoked',
-          text: `Your Data Room access was revoked.\n\n${note ? `Note: ${note}\n\n` : ''}Open: ${link}`,
-          html: `<p>Your Data Room access was revoked.</p>${note ? `<p>Note: ${note}</p>` : ''}<p><a href="${link}">Open</a></p>`,
+          text: `Your Data Room access was revoked.\n\n${note ? `Note: ${note}\n\n` : ''}Open: ${absoluteDataRoomUrl}`,
+          html: `<p>Your Data Room access was revoked.</p>${note ? `<p>Note: ${note}</p>` : ''}<p><a href="${absoluteDataRoomUrl}">Open</a></p>`,
         });
       }
     }

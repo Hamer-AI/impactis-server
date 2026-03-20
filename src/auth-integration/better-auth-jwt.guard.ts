@@ -1,8 +1,9 @@
-import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from '@nestjs/common';
+import { CanActivate, ExecutionContext, ForbiddenException, Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Socket } from 'socket.io';
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from 'jose';
 import type { AuthenticatedUser } from './auth-integration.service';
+import { PrismaService } from '../prisma/prisma.service';
 
 declare module 'http' {
   interface IncomingMessage {
@@ -16,7 +17,10 @@ export class BetterAuthJwtGuard implements CanActivate {
     | ReturnType<typeof createRemoteJWKSet>
     | null = null;
 
-  constructor(private readonly config: ConfigService) {}
+  constructor(
+    private readonly config: ConfigService,
+    private readonly prisma: PrismaService,
+  ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const ctxType = context.getType<'http' | 'ws' | 'rpc'>();
@@ -87,9 +91,36 @@ export class BetterAuthJwtGuard implements CanActivate {
       const jwkSet = await this.getJwkSet();
       const issuer = this.config.get<string>('betterAuthIssuer')?.trim();
       const { payload } = await jwtVerify(token, jwkSet, issuer ? { issuer } : undefined);
-      return this.toAuthenticatedUser(payload);
-    } catch {
+      const user = this.toAuthenticatedUser(payload);
+      await this.assertNotSuspended(user.id);
+      return user;
+    } catch (e) {
+      if (e instanceof ForbiddenException) {
+        throw e;
+      }
       throw new UnauthorizedException('Invalid or expired auth token');
+    }
+  }
+
+  private async assertNotSuspended(userId: string): Promise<void> {
+    try {
+      const rows = await this.prisma.$queryRaw<Array<{ suspended: boolean }>>`
+        select coalesce((raw_user_meta_data->'impactis'->>'suspended') = 'true', false) as suspended
+        from public.users
+        where id = ${userId}::uuid
+        limit 1
+      `;
+      if (rows[0]?.suspended === true) {
+        throw new ForbiddenException({
+          code: 'ACCOUNT_SUSPENDED',
+          message: 'This account has been suspended. Contact support if you believe this is an error.',
+        });
+      }
+    } catch (e) {
+      if (e instanceof ForbiddenException) {
+        throw e;
+      }
+      // If DB is unavailable, do not block auth (ops can still investigate via logs).
     }
   }
 

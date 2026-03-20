@@ -5,10 +5,12 @@ import type {
   AdminDealRoomView,
   AdminMeView,
   AdminOrgView,
+  AdminPlatformUserView,
   AdminStatsView,
   AdminSubscriptionView,
   AdminTicketView,
   ForceOrgTierInput,
+  PatchAdminPlatformUserInput,
   UpsertCapabilityOverrideInput,
   UpdateOrgLifecycleInput,
 } from './admin.types';
@@ -189,10 +191,20 @@ export class AdminService {
         and a.updated_at > (timezone('utc', now()) - interval '30 days')
     `;
 
+    const userCount = await this.prisma.$queryRaw<Array<{ n: number }>>`
+      select count(*)::int as n from public.users
+    `;
+
+    const openTickets = await this.prisma.$queryRaw<Array<{ n: number }>>`
+      select count(*)::int as n from public.support_tickets where status::text = 'open'
+    `;
+
     return {
       org_counts: (orgCounts ?? []).map((r) => ({ org_type: r.org_type, plan_code: r.plan_code, count: r.n ?? 0 })),
       active_deal_rooms: dealRooms[0]?.n ?? 0,
       agreements_signed_30d: signed[0]?.n ?? 0,
+      user_count: userCount[0]?.n ?? 0,
+      open_tickets: openTickets[0]?.n ?? 0,
     };
   }
 
@@ -363,6 +375,163 @@ export class AdminService {
     });
 
     return { success: true };
+  }
+
+  private ensureUserUuid(value: string, message: string): string {
+    const v = this.normalizeText(value);
+    if (!v || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v)) {
+      throw new Error(message);
+    }
+    return v;
+  }
+
+  async listPlatformUsers(params?: { q?: string | null; limit?: number }): Promise<AdminPlatformUserView[]> {
+    const q = this.normalizeText(params?.q ?? null);
+    const limit = typeof params?.limit === 'number' && Number.isFinite(params.limit) ? Math.max(1, Math.min(200, Math.trunc(params.limit))) : 100;
+
+    const rows = await this.prisma.$queryRaw<
+      Array<{
+        user_id: string;
+        email: string | null;
+        name: string | null;
+        created_at: Date;
+        suspended: boolean;
+        admin_note: string | null;
+        org_names: string | null;
+      }>
+    >`
+      select
+        u.id::text as user_id,
+        u.email,
+        u.name,
+        u.created_at,
+        coalesce((u.raw_user_meta_data->'impactis'->>'suspended') = 'true', false) as suspended,
+        nullif(trim(u.raw_user_meta_data->'impactis'->>'admin_note'), '') as admin_note,
+        (
+          select string_agg(o.name, ', ' order by o.name)
+          from public.org_members om
+          join public.organizations o on o.id = om.org_id
+          where om.user_id = u.id and om.status = 'active'
+        ) as org_names
+      from public.users u
+      where (
+        length(trim(coalesce(${q}::text, ''))) = 0
+        or u.email ilike '%' || trim(${q}::text) || '%'
+        or coalesce(u.name, '') ilike '%' || trim(${q}::text) || '%'
+        or u.id::text ilike '%' || trim(${q}::text) || '%'
+      )
+      order by u.created_at desc
+      limit ${limit}
+    `;
+
+    return (rows ?? []).map((r) => ({
+      user_id: r.user_id,
+      email: r.email,
+      name: r.name,
+      created_at: r.created_at.toISOString(),
+      suspended: r.suspended === true,
+      admin_note: r.admin_note,
+      organizations: r.org_names ? r.org_names.split(', ').filter(Boolean) : [],
+    }));
+  }
+
+  async getPlatformUserDetail(userId: string): Promise<AdminPlatformUserView | null> {
+    const id = this.ensureUserUuid(userId, 'Invalid user id');
+    const rows = await this.prisma.$queryRaw<
+      Array<{
+        user_id: string;
+        email: string | null;
+        name: string | null;
+        created_at: Date;
+        suspended: boolean;
+        admin_note: string | null;
+        org_names: string | null;
+      }>
+    >`
+      select
+        u.id::text as user_id,
+        u.email,
+        u.name,
+        u.created_at,
+        coalesce((u.raw_user_meta_data->'impactis'->>'suspended') = 'true', false) as suspended,
+        nullif(trim(u.raw_user_meta_data->'impactis'->>'admin_note'), '') as admin_note,
+        (
+          select string_agg(o.name, ', ' order by o.name)
+          from public.org_members om
+          join public.organizations o on o.id = om.org_id
+          where om.user_id = u.id and om.status = 'active'
+        ) as org_names
+      from public.users u
+      where u.id = ${id}::uuid
+      limit 1
+    `;
+    const r = rows[0];
+    if (!r) return null;
+    return {
+      user_id: r.user_id,
+      email: r.email,
+      name: r.name,
+      created_at: r.created_at.toISOString(),
+      suspended: r.suspended === true,
+      admin_note: r.admin_note,
+      organizations: r.org_names ? r.org_names.split(', ').filter(Boolean) : [],
+    };
+  }
+
+  async patchPlatformUser(adminUserId: string, userId: string, input: PatchAdminPlatformUserInput): Promise<{ success: boolean }> {
+    const id = this.ensureUserUuid(userId, 'Invalid user id');
+    const hasSuspended = typeof input.suspended === 'boolean';
+    const hasNote = input.adminNote !== undefined;
+    const note = input.adminNote === null || input.adminNote === undefined ? null : this.normalizeText(input.adminNote);
+
+    if (!hasSuspended && !hasNote) {
+      throw new Error('No changes provided');
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`
+        update public.users
+        set
+          raw_user_meta_data =
+            coalesce(raw_user_meta_data, '{}'::jsonb)
+            || jsonb_build_object(
+              'impactis',
+              coalesce(raw_user_meta_data->'impactis', '{}'::jsonb)
+                || case when ${hasSuspended}::boolean then jsonb_build_object('suspended', ${input.suspended === true}::boolean) else '{}'::jsonb end
+                || case when ${hasNote}::boolean then jsonb_build_object('admin_note', ${note}) else '{}'::jsonb end
+            ),
+          updated_at = timezone('utc', now())
+        where id = ${id}::uuid
+      `;
+      await tx.$queryRaw`
+        insert into public.admin_audit_logs (admin_id, action, target_type, target_id, payload)
+        values (
+          ${adminUserId}::uuid,
+          'platform_user_updated',
+          'user',
+          ${id},
+          jsonb_build_object('suspended', ${hasSuspended ? input.suspended : null}, 'admin_note', ${hasNote ? note : null})
+        )
+      `;
+    });
+
+    return { success: true };
+  }
+
+  async revokeUserSessions(adminUserId: string, userId: string): Promise<{ success: boolean; deleted: number }> {
+    const id = this.ensureUserUuid(userId, 'Invalid user id');
+    const deleted = await this.prisma.$transaction(async (tx) => {
+      const del = await tx.$queryRaw<Array<{ id: string }>>`
+        delete from public.sessions where "userId" = ${id}::uuid returning id
+      `;
+      const n = del.length;
+      await tx.$queryRaw`
+        insert into public.admin_audit_logs (admin_id, action, target_type, target_id, payload)
+        values (${adminUserId}::uuid, 'user_sessions_revoked', 'user', ${id}, jsonb_build_object('sessions_deleted', ${n}::int))
+      `;
+      return n;
+    });
+    return { success: true, deleted };
   }
 }
 

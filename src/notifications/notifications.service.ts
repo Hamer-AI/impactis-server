@@ -6,13 +6,44 @@ import type { NotificationView } from './notifications.types';
 export class NotificationsService {
   constructor(private readonly prisma: PrismaService) {}
 
+  /**
+   * In-app links must be relative paths on the Next.js app so clicks stay on the same origin
+   * (session cookies). Strips absolute URLs to pathname; blocks sign-out and external paths.
+   */
+  sanitizeInAppLink(link: string | null | undefined): string | null {
+    if (link == null) return null;
+    const raw = String(link).trim();
+    if (!raw) return null;
+    let path = raw;
+    try {
+      if (/^https?:\/\//i.test(raw)) {
+        const u = new URL(raw);
+        path = `${u.pathname}${u.search}${u.hash}`;
+      }
+    } catch {
+      return '/workspace/notifications';
+    }
+    if (!path.startsWith('/') || path.startsWith('//')) {
+      return '/workspace/notifications';
+    }
+    const lower = path.toLowerCase();
+    if (lower.startsWith('/auth/signout')) {
+      return '/workspace/notifications';
+    }
+    if (!lower.startsWith('/workspace') && !lower.startsWith('/onboarding')) {
+      return '/workspace/notifications';
+    }
+    return path.length > 2048 ? path.slice(0, 2048) : path;
+  }
+
   async createForUser(
     userId: string,
     params: { type: string; title: string; body?: string | null; link?: string | null },
   ): Promise<void> {
+    const safeLink = this.sanitizeInAppLink(params.link);
     await this.prisma.$queryRaw`
       insert into public.notifications (user_id, type, title, body, link)
-      values (${userId}::uuid, ${params.type}, ${params.title}, ${params.body ?? null}, ${params.link ?? null})
+      values (${userId}::uuid, ${params.type}, ${params.title}, ${params.body ?? null}, ${safeLink})
     `;
   }
 
@@ -24,6 +55,7 @@ export class NotificationsService {
     const rows = await this.prisma.$queryRaw<Array<{ user_id: string }>>`
       select om.user_id
       from public.org_members om
+      join public.users u on u.id = om.user_id
       left join public.org_status s on s.org_id = om.org_id
       where om.org_id = ${orgId}::uuid and om.status = 'active'
         and coalesce(s.status::text, 'active') = 'active'
@@ -56,7 +88,7 @@ export class NotificationsService {
       type: r.type,
       title: r.title,
       body: r.body,
-      link: r.link,
+      link: this.sanitizeInAppLink(r.link),
       read_at: r.read_at?.toISOString() ?? null,
       created_at: r.created_at.toISOString(),
     }));

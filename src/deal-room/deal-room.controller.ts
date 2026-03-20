@@ -143,6 +143,36 @@ export class DealRoomController {
     }
   }
 
+  @Get(':dealRoomId/agreements')
+  async listAgreements(
+    @Req() req: RequestWithUser,
+    @Param('dealRoomId') dealRoomId: string,
+  ): Promise<Array<{ id: string; title: string; status: string; updated_at: string }> | { error: string }> {
+    const user = req.user;
+    if (!user) return { error: 'Unauthorized' };
+    try {
+      return await this.dealRoom.listAgreements({ userId: user.id, dealRoomId });
+    } catch (e) {
+      this.rethrowForbidden(e);
+      return { error: e instanceof Error ? e.message : 'Failed to load agreements' };
+    }
+  }
+
+  @Get(':dealRoomId/milestones')
+  async listMilestones(
+    @Req() req: RequestWithUser,
+    @Param('dealRoomId') dealRoomId: string,
+  ): Promise<Array<{ id: string; title: string; completed_at: string | null; due_date: string | null }> | { error: string }> {
+    const user = req.user;
+    if (!user) return { error: 'Unauthorized' };
+    try {
+      return await this.dealRoom.listMilestones({ userId: user.id, dealRoomId });
+    } catch (e) {
+      this.rethrowForbidden(e);
+      return { error: e instanceof Error ? e.message : 'Failed to load milestones' };
+    }
+  }
+
   @Post(':dealRoomId/messages')
   @UseGuards(ReadinessGuard)
   async sendMessage(

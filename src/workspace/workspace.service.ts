@@ -656,29 +656,6 @@ export class WorkspaceService {
     };
   }
 
-  private buildWorkspaceIdentityFromBootstrap(
-    userId: string,
-    bootstrap: WorkspaceBootstrapSnapshot,
-  ): WorkspaceIdentitySnapshot {
-    return {
-      profile: {
-        ...bootstrap.profile,
-        id: bootstrap.profile.id || userId,
-      },
-      onboarding_progress: null,
-      onboarding_details: null,
-      membership: bootstrap.membership
-        ? {
-            ...bootstrap.membership,
-            organization: {
-              ...bootstrap.membership.organization,
-              industry_tags: [...bootstrap.membership.organization.industry_tags],
-            },
-          }
-        : null,
-    };
-  }
-
   private async getVerificationStatus(orgId: string): Promise<string> {
     const verificationRows = await this.prisma.$queryRaw<Array<{ status: string | null }>>`
       select ov.status::text as status
@@ -791,6 +768,11 @@ export class WorkspaceService {
       where sp.status = 'published'::public.startup_post_status
         and o.type = 'startup'::public.org_type
         and coalesce(s.status::text, 'active') = 'active'
+        and exists (
+          select 1
+          from public.org_members om
+          where om.org_id = o.id and om.status = 'active'
+        )
       order by coalesce(sp.need_advisor, false) desc, coalesce(sp.published_at, sp.updated_at) desc, sp.created_at desc
       limit 120
     `;
@@ -863,6 +845,11 @@ export class WorkspaceService {
         left join public.org_status s on s.org_id = o.id
         where o.type = 'investor'::public.org_type and o.id != ${currentOrgId}::uuid
           and coalesce(s.status::text, 'active') = 'active'
+          and exists (
+            select 1
+            from public.org_members om
+            where om.org_id = o.id and om.status = 'active'
+          )
         order by ip.updated_at desc
         limit 80
       `;
@@ -897,6 +884,11 @@ export class WorkspaceService {
         left join public.org_status s on s.org_id = o.id
         where o.type = 'advisor'::public.org_type and o.id != ${currentOrgId}::uuid
           and coalesce(s.status::text, 'active') = 'active'
+          and exists (
+            select 1
+            from public.org_members om
+            where om.org_id = o.id and om.status = 'active'
+          )
         order by ap.updated_at desc
         limit 80
       `;
@@ -1244,19 +1236,6 @@ export class WorkspaceService {
       }
     }
 
-    const bootstrapCached = await this.readWorkspaceBootstrapCacheFast(userId);
-    if (bootstrapCached) {
-      const payload = this.buildWorkspaceIdentityFromBootstrap(userId, bootstrapCached);
-      await this.writeWorkspaceCacheValue(
-        cacheKey,
-        cacheLabel,
-        payload,
-        this.getWorkspaceIdentityCacheTtlSeconds(),
-        metricContext,
-      );
-      return payload;
-    }
-
     const [profileRows, membershipRow] = await Promise.all([
       this.prisma.$queryRaw<
         Array<{
@@ -1317,26 +1296,63 @@ export class WorkspaceService {
     const orgTypeForOnboarding = membershipRow
       ? this.normalizeOrgType(membershipRow.organization_type)
       : null;
-    if (orgTypeForOnboarding) {
+    if (orgTypeForOnboarding && membershipRow?.org_id) {
       try {
         const progressRows = await this.prisma.$queryRaw<
-          Array<{ total_stages: number; completed_stages: number; is_completed: boolean }>
+          Array<{
+            total_stages: number;
+            completed_stages: number;
+            has_step1: boolean;
+            has_questionnaire: boolean;
+          }>
         >`
-          select total_stages::int as total_stages, completed_stages::int as completed_stages, is_completed
-          from public.user_onboarding_progress
-          where user_id = ${userId}::uuid and organization_type = ${orgTypeForOnboarding}
-          limit 1
+          select
+            greatest(2, coalesce(max(step_number), 0))::int as total_stages,
+            count(*) filter (
+              where status in ('completed'::public.onboarding_step_status, 'skipped'::public.onboarding_step_status)
+            )::int as completed_stages,
+            bool_or(step_key = 'step1' and status = 'completed'::public.onboarding_step_status) as has_step1,
+            bool_or(
+              step_key = 'questionnaire'
+              and status in ('completed'::public.onboarding_step_status, 'skipped'::public.onboarding_step_status)
+            ) as has_questionnaire
+          from public.onboarding_progress
+          where org_id = ${membershipRow.org_id}::uuid
         `;
         const prog = progressRows[0];
         if (prog && typeof prog.total_stages === 'number' && typeof prog.completed_stages === 'number') {
+          const totalStages = Math.max(2, Math.min(20, prog.total_stages));
+          const completedStages = Math.max(0, Math.min(totalStages, prog.completed_stages));
           onboardingProgress = {
-            total_stages: Math.max(1, Math.min(20, prog.total_stages)),
-            completed_stages: Math.max(0, Math.min(prog.total_stages, prog.completed_stages)),
-            is_completed: prog.is_completed === true,
+            total_stages: totalStages,
+            completed_stages: completedStages,
+            is_completed:
+              completedStages >= totalStages
+              || (prog.has_step1 === true && prog.has_questionnaire === true),
           };
         }
       } catch {
-        // Table may not exist
+        // Fallback for older deployments still using the user-scoped onboarding snapshot.
+        try {
+          const progressRows = await this.prisma.$queryRaw<
+            Array<{ total_stages: number; completed_stages: number; is_completed: boolean }>
+          >`
+            select total_stages::int as total_stages, completed_stages::int as completed_stages, is_completed
+            from public.user_onboarding_progress
+            where user_id = ${userId}::uuid and organization_type = ${orgTypeForOnboarding}
+            limit 1
+          `;
+          const prog = progressRows[0];
+          if (prog && typeof prog.total_stages === 'number' && typeof prog.completed_stages === 'number') {
+            onboardingProgress = {
+              total_stages: Math.max(1, Math.min(20, prog.total_stages)),
+              completed_stages: Math.max(0, Math.min(prog.total_stages, prog.completed_stages)),
+              is_completed: prog.is_completed === true,
+            };
+          }
+        } catch {
+          // Table may not exist
+        }
       }
     }
     try {
@@ -1802,13 +1818,6 @@ export class WorkspaceService {
         payload,
         this.getWorkspaceBootstrapCacheTtlSeconds(),
         metricContext,
-      );
-      await this.writeWorkspaceCacheValue(
-        this.cache.workspaceIdentityKey(userId),
-        `workspace-identity user=${userId} prewarm`,
-        this.buildWorkspaceIdentityFromBootstrap(userId, payload),
-        this.getWorkspaceIdentityCacheTtlSeconds(),
-        { cacheName: 'workspace_identity' },
       );
       return payload;
     } catch (error) {

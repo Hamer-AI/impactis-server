@@ -58,6 +58,8 @@ export type AdminStatsView = {
   org_counts: Array<{ org_type: string; plan_code: string; count: number }>;
   active_deal_rooms: number;
   agreements_signed_30d: number;
+  user_count: number;
+  open_tickets: number;
 };
 
 export type AdminDealRoomView = {
@@ -106,5 +108,26 @@ export class AssignTicketInput {
   @IsString()
   @MaxLength(64)
   assignedTo?: string | null; // admin_users.user_id
+}
+
+export type AdminPlatformUserView = {
+  user_id: string;
+  email: string | null;
+  name: string | null;
+  created_at: string;
+  suspended: boolean;
+  admin_note: string | null;
+  organizations: string[];
+};
+
+export class PatchAdminPlatformUserInput {
+  @IsOptional()
+  @IsBoolean()
+  suspended?: boolean;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  adminNote?: string | null;
 }
 

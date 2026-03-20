@@ -92,6 +92,10 @@ export class ConnectionsService {
     if (!toOrg) {
       throw new Error('Target organization was not found');
     }
+    const toOrgMembers = await this.getOrgMemberEmails(toOrgId);
+    if (toOrgMembers.length < 1) {
+      throw new Error('Target organization is not available for connections yet');
+    }
     if (!this.canRequestConnection(ctx.orgType, toOrg.type)) {
       throw new Error(`Connection requests are not allowed from ${ctx.orgType} to ${toOrg.type}`);
     }
@@ -180,16 +184,16 @@ export class ConnectionsService {
     });
     const r = inserted;
 
-    const connectionsLink = `${APP_ORIGIN.replace(/\/+$/, '')}/workspace/connections`;
+    const inAppConnectionsPath = '/workspace/connections';
+    const connectionsLink = `${APP_ORIGIN.replace(/\/+$/, '')}${inAppConnectionsPath}`;
     const title = `${fromName} wants to connect`;
     const body = `You have a new connection request from ${fromName}. Accept or decline in Connections.`;
     await this.notifications.createForOrg(toOrgId, {
       type: 'connection_request_received',
       title,
       body,
-      link: connectionsLink,
+      link: inAppConnectionsPath,
     });
-    const toOrgMembers = await this.getOrgMemberEmails(toOrgId);
     for (const m of toOrgMembers) {
       if (m.email?.trim()) {
         await this.mailer.send({
@@ -328,13 +332,14 @@ export class ConnectionsService {
     const otherId = conn.org_a_id === ctx.orgId ? conn.org_b_id : conn.org_a_id;
     const otherName = conn.org_a_id === ctx.orgId ? conn.org_b_name : conn.org_a_name;
 
-    const connectionsLink = `${APP_ORIGIN.replace(/\/+$/, '')}/workspace/connections`;
+    const inAppConnectionsPath = '/workspace/connections';
+    const connectionsLink = `${APP_ORIGIN.replace(/\/+$/, '')}${inAppConnectionsPath}`;
     const toOrgName = conn.org_a_id === ctx.orgId ? conn.org_b_name : conn.org_a_name;
     await this.notifications.createForOrg(req.from_org_id, {
       type: 'connection_request_accepted',
       title: `${toOrgName} accepted your connection request`,
       body: `You are now connected. You can message from Deal Room.`,
-      link: connectionsLink,
+      link: inAppConnectionsPath,
     });
     const fromOrgMembers = await this.getOrgMemberEmails(req.from_org_id);
     for (const m of fromOrgMembers) {
@@ -367,18 +372,19 @@ export class ConnectionsService {
       } catch {
         // Table may not exist yet; run prisma/migrations/add_notifications_and_deal_rooms.sql
       }
-      const dealRoomLink = `${APP_ORIGIN.replace(/\/+$/, '')}/workspace/connections`;
+      const inAppDealPath = '/workspace/connections';
+      const dealRoomLink = `${APP_ORIGIN.replace(/\/+$/, '')}${inAppDealPath}`;
       await this.notifications.createForOrg(conn.org_a_id, {
         type: 'deal_room_created',
         title: 'Deal Room created',
         body: `A Deal Room is now available for this connection. Open it from Connections.`,
-        link: dealRoomLink,
+        link: inAppDealPath,
       });
       await this.notifications.createForOrg(conn.org_b_id, {
         type: 'deal_room_created',
         title: 'Deal Room created',
         body: `A Deal Room is now available for this connection. Open it from Connections.`,
-        link: dealRoomLink,
+        link: inAppDealPath,
       });
       const allMemberEmails = [
         ...(await this.getOrgMemberEmails(conn.org_a_id)),
@@ -430,16 +436,19 @@ export class ConnectionsService {
         org_b_id: string;
         other_org_id: string;
         other_org_name: string;
+        deal_room_id: string | null;
         created_at: Date;
       }>
     >`
       select
         c.id, c.org_a_id, c.org_b_id, c.created_at,
+        dr.id::text as deal_room_id,
         case when c.org_a_id = ${ctx.orgId}::uuid then c.org_b_id else c.org_a_id end as other_org_id,
         case when c.org_a_id = ${ctx.orgId}::uuid then ob.name else oa.name end as other_org_name
       from public.connections c
       join public.organizations oa on oa.id = c.org_a_id
       join public.organizations ob on ob.id = c.org_b_id
+      left join public.deal_rooms dr on dr.connection_id = c.id
       where c.org_a_id = ${ctx.orgId}::uuid or c.org_b_id = ${ctx.orgId}::uuid
       order by c.created_at desc
     `;
@@ -449,6 +458,7 @@ export class ConnectionsService {
       org_b_id: c.org_b_id,
       other_org_id: c.other_org_id,
       other_org_name: c.other_org_name,
+      deal_room_id: c.deal_room_id ?? null,
       created_at: c.created_at.toISOString(),
     }));
   }

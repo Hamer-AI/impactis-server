@@ -222,24 +222,28 @@ export class DealRoomService {
 
     const notifyTargetOrgId = ctx.orgType === 'investor' ? startupOrgId : investorOrgId;
     const notifyTargetName = ctx.orgType === 'investor' ? startupName : counterparty.name;
+    const targetMembers = await this.getOrgMemberEmails(notifyTargetOrgId);
+    if (targetMembers.length < 1) {
+      throw new Error('Target organization is not available for deal requests yet');
+    }
 
-    const link = `${APP_ORIGIN.replace(/\/+$/, '')}/workspace/notifications`;
+    const inAppPath = '/workspace/notifications';
+    const absoluteUrl = `${APP_ORIGIN.replace(/\/+$/, '')}${inAppPath}`;
     const title = `${investorName} wants to start a deal discussion`;
     const body = `You have a new Deal Room request from ${investorName}. Accept or decline in Notifications.`;
     await this.notifications.createForOrg(notifyTargetOrgId, {
       type: 'deal_room_request_received',
       title,
       body,
-      link,
+      link: inAppPath,
     });
-    const targetMembers = await this.getOrgMemberEmails(notifyTargetOrgId);
     for (const m of targetMembers) {
       if (m.email?.trim()) {
         await this.mailer.send({
           to: m.email.trim(),
           subject: title,
-          text: `${body}\n\nOpen: ${link}`,
-          html: `<p>${body}</p><p><a href="${link}">Open notifications</a></p>`,
+          text: `${body}\n\nOpen: ${absoluteUrl}`,
+          html: `<p>${body}</p><p><a href="${absoluteUrl}">Open notifications</a></p>`,
         });
       }
     }
@@ -389,12 +393,13 @@ export class DealRoomService {
       return room;
     });
 
-    const link = `${APP_ORIGIN.replace(/\/+$/, '')}/workspace/connections`;
+    const inAppPath = '/workspace/connections';
+    const absoluteUrl = `${APP_ORIGIN.replace(/\/+$/, '')}${inAppPath}`;
     await this.notifications.createForOrg(req.investor_org_id, {
       type: 'deal_room_created',
       title: 'Deal Room opened',
       body: 'Your Deal Room request was accepted. You can now chat and progress the deal.',
-      link,
+      link: inAppPath,
     });
     const investorMembers = await this.getOrgMemberEmails(req.investor_org_id);
     for (const m of investorMembers) {
@@ -402,8 +407,8 @@ export class DealRoomService {
         await this.mailer.send({
           to: m.email.trim(),
           subject: 'Deal Room opened – Impactis',
-          text: `Your Deal Room request was accepted. Open: ${link}`,
-          html: `<p>Your Deal Room request was accepted.</p><p><a href="${link}">Open Deal Room</a></p>`,
+          text: `Your Deal Room request was accepted. Open: ${absoluteUrl}`,
+          html: `<p>Your Deal Room request was accepted.</p><p><a href="${absoluteUrl}">Open Deal Room</a></p>`,
         });
       }
     }
@@ -439,12 +444,13 @@ export class DealRoomService {
       where id = ${requestId}::uuid and status = 'pending'
     `;
 
-    const link = `${APP_ORIGIN.replace(/\/+$/, '')}/workspace/notifications`;
+    const inAppPath = '/workspace/notifications';
+    const absoluteUrl = `${APP_ORIGIN.replace(/\/+$/, '')}${inAppPath}`;
     await this.notifications.createForOrg(r.investor_org_id, {
       type: 'deal_room_request_rejected',
       title: 'Deal Room request declined',
       body: note ? `Your request was declined: ${note}` : 'Your request was declined.',
-      link,
+      link: inAppPath,
     });
     const members = await this.getOrgMemberEmails(r.investor_org_id);
     for (const m of members) {
@@ -452,8 +458,8 @@ export class DealRoomService {
         await this.mailer.send({
           to: m.email.trim(),
           subject: 'Deal Room request declined – Impactis',
-          text: `Your request was declined.${note ? `\n\nNote: ${note}` : ''}\n\nOpen: ${link}`,
-          html: `<p>Your request was declined.</p>${note ? `<p>Note: ${note}</p>` : ''}<p><a href="${link}">Open</a></p>`,
+          text: `Your request was declined.${note ? `\n\nNote: ${note}` : ''}\n\nOpen: ${absoluteUrl}`,
+          html: `<p>Your request was declined.</p>${note ? `<p>Note: ${note}</p>` : ''}<p><a href="${absoluteUrl}">Open</a></p>`,
         });
       }
     }
@@ -647,14 +653,15 @@ export class DealRoomService {
       join public.organizations o on o.id = p.org_id
       where p.deal_room_id = ${dealRoomId}::uuid
     `;
-    const link = `${APP_ORIGIN.replace(/\/+$/, '')}/workspace/connections`;
+    const inAppPath = '/workspace/connections';
+    const absoluteUrl = `${APP_ORIGIN.replace(/\/+$/, '')}${inAppPath}`;
     for (const o of orgRows) {
       if (o.org_id === ctx.orgId) continue;
       await this.notifications.createForOrg(o.org_id, {
         type: 'deal_room_message',
         title: 'New Deal Room message',
         body: text.length > 160 ? `${text.slice(0, 160)}…` : text,
-        link,
+        link: inAppPath,
       });
       const members = await this.getOrgMemberEmails(o.org_id);
       for (const mem of members) {
@@ -662,8 +669,8 @@ export class DealRoomService {
           await this.mailer.send({
             to: mem.email.trim(),
             subject: 'New Deal Room message – Impactis',
-            text: `${text}\n\nOpen: ${link}`,
-            html: `<p>${text}</p><p><a href="${link}">Open Deal Room</a></p>`,
+            text: `${text}\n\nOpen: ${absoluteUrl}`,
+            html: `<p>${text}</p><p><a href="${absoluteUrl}">Open Deal Room</a></p>`,
           });
         }
       }
@@ -708,13 +715,13 @@ export class DealRoomService {
     const orgRows = await this.prisma.$queryRaw<Array<{ org_id: string }>>`
       select org_id::text as org_id from public.deal_room_participants where deal_room_id = ${params.dealRoomId}::uuid
     `;
-    const link = `${APP_ORIGIN.replace(/\/+$/, '')}/workspace/connections`;
+    const inAppPath = '/workspace/connections';
     for (const o of orgRows) {
       await this.notifications.createForOrg(o.org_id, {
         type: 'deal_room_stage_changed',
         title: 'Deal stage updated',
         body: `Stage changed to ${params.stage.replace(/_/g, ' ')}`,
-        link,
+        link: inAppPath,
       });
     }
 
@@ -758,13 +765,13 @@ export class DealRoomService {
       where p.deal_room_id = ${params.dealRoomId}::uuid
     `;
     const others = (orgRows ?? []).map((r) => r.org_id).filter((id) => id && id !== ctx.orgId);
-    const link = `${APP_ORIGIN.replace(/\/+$/, '')}/workspace/deal-room/${params.dealRoomId}`;
+    const inAppPath = `/workspace/deal-room/${params.dealRoomId}`;
     for (const orgId of others) {
       await this.notifications.createForOrg(orgId, {
         type: 'agreement_signed',
         title: 'Agreement signed',
         body: 'A participant signed an agreement in your deal room.',
-        link,
+        link: inAppPath,
       });
     }
 
@@ -865,6 +872,50 @@ export class DealRoomService {
     };
   }
 
+  async listAgreements(params: {
+    userId: string;
+    dealRoomId: string;
+  }): Promise<Array<{ id: string; title: string; status: string; updated_at: string }>> {
+    await this.assertParticipant(params.userId, params.dealRoomId);
+    const rows = await this.prisma.$queryRaw<
+      Array<{ id: string; title: string; status: string; updated_at: Date }>
+    >`
+      select id::text as id, title, status::text as status, updated_at
+      from public.deal_room_agreements
+      where deal_room_id = ${params.dealRoomId}::uuid
+      order by created_at desc
+      limit 100
+    `;
+    return (rows ?? []).map((r) => ({
+      id: r.id,
+      title: r.title,
+      status: r.status,
+      updated_at: r.updated_at.toISOString(),
+    }));
+  }
+
+  async listMilestones(params: {
+    userId: string;
+    dealRoomId: string;
+  }): Promise<Array<{ id: string; title: string; completed_at: string | null; due_date: string | null }>> {
+    await this.assertParticipant(params.userId, params.dealRoomId);
+    const rows = await this.prisma.$queryRaw<
+      Array<{ id: string; title: string; completed_at: Date | null; due_date: Date | null }>
+    >`
+      select id::text as id, title, completed_at, due_date
+      from public.deal_room_milestones
+      where deal_room_id = ${params.dealRoomId}::uuid
+      order by sort_order asc, created_at asc
+      limit 200
+    `;
+    return (rows ?? []).map((r) => ({
+      id: r.id,
+      title: r.title,
+      completed_at: r.completed_at ? r.completed_at.toISOString() : null,
+      due_date: r.due_date ? r.due_date.toISOString().slice(0, 10) : null,
+    }));
+  }
+
   async inviteParticipant(params: { userId: string; dealRoomId: string; orgId: string; role: string }): Promise<{ success: boolean }> {
     await this.assertParticipant(params.userId, params.dealRoomId);
     const orgId = this.ensureUuid(params.orgId, 'Invalid orgId');
@@ -880,12 +931,12 @@ export class DealRoomService {
     `;
 
     try {
-      const link = `${APP_ORIGIN.replace(/\/+$/, '')}/workspace/deal-room/${params.dealRoomId}`;
+      const inAppPath = `/workspace/deal-room/${params.dealRoomId}`;
       await this.notifications.createForOrg(orgId, {
         type: 'deal_room_participant_invited',
         title: 'You were invited to a Deal Room',
         body: 'Open the Deal Room to join the discussion.',
-        link,
+        link: inAppPath,
       });
     } catch {
       // ignore notification failures

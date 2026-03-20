@@ -38,6 +38,7 @@ export type ConnectionView = {
   org_b_id: string;
   other_org_id: string;
   other_org_name: string;
+  deal_room_id?: string | null;
   created_at: string;
 };
 

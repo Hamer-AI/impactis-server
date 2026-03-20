@@ -1,7 +1,7 @@
 import { Body, Controller, ForbiddenException, Get, Param, Post, Req, UseGuards, VERSION_NEUTRAL } from '@nestjs/common';
 import { BetterAuthJwtGuard } from '../auth-integration/better-auth-jwt.guard';
 import { AuthenticatedUser } from '../auth-integration/auth-integration.service';
-import { ReadinessGuard } from '../onboarding/readiness.guard';
+import { DiscoveryReadinessGuard } from '../onboarding/discovery-readiness.guard';
 import { BillingService } from '../billing/billing.service';
 import type { WorkspaceUnifiedDiscoveryCard } from './workspace.types';
 import { WorkspaceService } from './workspace.service';
@@ -38,7 +38,7 @@ export class DiscoveryController {
 
   // v3 alias: GET /api/discovery/feed
   @Get('feed')
-  @UseGuards(ReadinessGuard)
+  @UseGuards(DiscoveryReadinessGuard)
   async getFeed(@Req() req: RequestWithUser): Promise<WorkspaceUnifiedDiscoveryCard[]> {
     const user = req.user;
     if (!user) return [];
@@ -54,7 +54,7 @@ export class DiscoveryController {
 
   // v3 alias: GET /api/discovery/feed/:orgId
   @Get('feed/:orgId')
-  @UseGuards(ReadinessGuard)
+  @UseGuards(DiscoveryReadinessGuard)
   async getFeedCard(
     @Req() req: RequestWithUser,
     @Param('orgId') orgId: string,
@@ -146,7 +146,7 @@ export class DiscoveryController {
 
   // v3: store match feedback (interested/passed/etc)
   @Post('feedback')
-  @UseGuards(ReadinessGuard)
+  @UseGuards(DiscoveryReadinessGuard)
   async feedback(
     @Req() req: RequestWithUser,
     @Body() input: { targetOrgId: string; feedbackType: string; declineReason?: string | null },
@@ -176,7 +176,7 @@ export class DiscoveryController {
 
   // v3: list AI matches (demo: uses existing ai_match_scores table; free returns empty)
   @Get('matches')
-  @UseGuards(ReadinessGuard)
+  @UseGuards(DiscoveryReadinessGuard)
   async matches(@Req() req: RequestWithUser): Promise<Array<{ to_org_id: string; overall_score: number; reasons: string[] }>> {
     const user = req.user;
     if (!user) return [];
