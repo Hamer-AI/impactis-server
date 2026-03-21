@@ -1,9 +1,9 @@
-import { IsIn, IsISO8601, IsOptional, IsString, IsUUID, MaxLength } from 'class-validator';
+import { IsIn, IsISO8601, IsOptional, IsString, MaxLength , Matches } from 'class-validator';
 
 export type DataRoomPermissionLevel = 'view' | 'view_download';
 
 export class CreateDataRoomAccessRequestInput {
-  @IsUUID()
+  @Matches(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, { message: '$property must be a valid UUID' })
   startupOrgId!: string;
 
   @IsOptional()
@@ -80,7 +80,6 @@ export type DataRoomAccessGrantView = {
 export type DataRoomFolderView = {
   id: string;
   parent_id: string | null;
-  path: string;
   name: string;
   created_at: string;
 };

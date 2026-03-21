@@ -1,4 +1,4 @@
-import { IsOptional, IsString, IsUUID, MaxLength, MinLength } from 'class-validator';
+import { IsOptional, IsString, MaxLength, MinLength , Matches } from 'class-validator';
 
 export type SyndicateStatus = 'forming' | 'active' | 'closed' | 'cancelled';
 export type SyndicateMemberStatus = 'invited' | 'confirmed' | 'declined' | 'withdrew';
@@ -16,12 +16,12 @@ export class CreateSyndicateInput {
   description?: string | null;
 
   @IsOptional()
-  @IsUUID()
+  @Matches(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, { message: '$property must be a valid UUID' })
   startupOrgId?: string | null;
 }
 
 export class InviteToSyndicateInput {
-  @IsUUID()
+  @Matches(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, { message: '$property must be a valid UUID' })
   inviteeOrgId!: string;
 
   @IsOptional()

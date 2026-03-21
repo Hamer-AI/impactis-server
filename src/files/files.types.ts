@@ -1,4 +1,4 @@
-import { IsIn, IsInt, IsMimeType, IsString, IsUUID, Max, MaxLength, Min } from 'class-validator';
+import { IsIn, IsInt, IsMimeType, IsString, Max, MaxLength, Min , Matches } from 'class-validator';
 
 export class StartupPitchDeckUploadUrlPayload {
   success!: boolean;
@@ -13,7 +13,7 @@ export class StartupPitchDeckUploadUrlPayload {
 }
 
 export class CreateStartupPitchDeckUploadUrlInput {
-  @IsUUID()
+  @Matches(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, { message: '$property must be a valid UUID' })
   orgId!: string;
 
   @IsString()
@@ -44,7 +44,7 @@ export class CreateProfileAvatarUploadUrlInput {
 }
 
 export class CreateOrganizationLogoUploadUrlInput {
-  @IsUUID()
+  @Matches(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, { message: '$property must be a valid UUID' })
   orgId!: string;
 
   @IsString()
@@ -61,7 +61,7 @@ export class CreateOrganizationLogoUploadUrlInput {
 }
 
 export class CreateStartupReadinessUploadUrlInput {
-  @IsUUID()
+  @Matches(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, { message: '$property must be a valid UUID' })
   orgId!: string;
 
   @IsIn(['pitch_deck', 'financial_doc', 'legal_doc'])
@@ -96,7 +96,7 @@ export const STARTUP_DATA_ROOM_DOCUMENT_TYPES = [
 export type StartupDataRoomDocumentType = (typeof STARTUP_DATA_ROOM_DOCUMENT_TYPES)[number];
 
 export class CreateStartupDataRoomUploadUrlInput {
-  @IsUUID()
+  @Matches(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, { message: '$property must be a valid UUID' })
   orgId!: string;
 
   @IsIn(STARTUP_DATA_ROOM_DOCUMENT_TYPES)

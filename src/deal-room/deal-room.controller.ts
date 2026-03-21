@@ -158,6 +158,22 @@ export class DealRoomController {
     }
   }
 
+  @Get(':dealRoomId/agreements/:agreementId')
+  async getAgreement(
+    @Req() req: RequestWithUser,
+    @Param('dealRoomId') dealRoomId: string,
+    @Param('agreementId') agreementId: string,
+  ): Promise<{ id: string; title: string; status: string; template_key: string | null; content_text: string | null; updated_at: string; signed_by: any } | { error: string }> {
+    const user = req.user;
+    if (!user) return { error: 'Unauthorized' };
+    try {
+      return await this.dealRoom.getAgreement({ userId: user.id, dealRoomId, agreementId });
+    } catch (e) {
+      this.rethrowForbidden(e);
+      return { error: e instanceof Error ? e.message : 'Failed to load agreement' };
+    }
+  }
+
   @Get(':dealRoomId/milestones')
   async listMilestones(
     @Req() req: RequestWithUser,

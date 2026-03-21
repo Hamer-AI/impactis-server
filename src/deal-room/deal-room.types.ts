@@ -1,4 +1,4 @@
-import { IsIn, IsOptional, IsString, IsUUID, MaxLength, MinLength } from 'class-validator';
+import { IsIn, IsOptional, IsString, MaxLength, MinLength , Matches } from 'class-validator';
 
 export type DealRoomStage =
   | 'interest'
@@ -9,7 +9,7 @@ export type DealRoomStage =
   | 'closed';
 
 export class CreateDealRoomRequestInput {
-  @IsUUID()
+  @Matches(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, { message: '$property must be a valid UUID' })
   startupOrgId!: string;
 
   @IsOptional()

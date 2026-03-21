@@ -1,4 +1,4 @@
-import { IsBoolean, IsOptional, IsString, IsUUID, MaxLength } from 'class-validator';
+import { IsBoolean, IsOptional, IsString, MaxLength , Matches } from 'class-validator';
 
 export type AdminMeView = {
   user_id: string;
@@ -29,7 +29,7 @@ export class UpdateOrgLifecycleInput {
 }
 
 export class UpsertCapabilityOverrideInput {
-  @IsUUID()
+  @Matches(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, { message: '$property must be a valid UUID' })
   orgId!: string;
 
   @IsString()

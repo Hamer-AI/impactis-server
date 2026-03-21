@@ -161,9 +161,11 @@ export class OnboardingService {
   }
 
   private assertStep1RequiredFields(role: OnboardingRole, values: Record<string, unknown>): void {
+    console.log('[DEBUG] assertStep1RequiredFields called', { role, values });
     if (this.hasStep1RequiredFields(role, values)) {
       return;
     }
+    console.error('[DEBUG] assertStep1RequiredFields FAILED', { role, values });
     if (role === 'startup') {
       throw new Error(
         'Startup step 1 requires company identity and either a contact/link or country of incorporation.',
@@ -334,7 +336,6 @@ export class OnboardingService {
           entity_name: string | null;
           primary_contact_name: string | null;
           linkedin_url: string | null;
-          website_url: string | null;
           investing_years_band: string | null;
           total_investments_made_band: string | null;
         }>
@@ -343,7 +344,6 @@ export class OnboardingService {
           i.entity_name,
           i.primary_contact_name,
           i.linkedin_url,
-          i.website_url,
           i.investing_years_band,
           i.total_investments_made_band
         from public.investor_onboarding_answers i
@@ -355,7 +355,6 @@ export class OnboardingService {
         entity_name: row?.entity_name ?? null,
         primary_contact_name: row?.primary_contact_name ?? null,
         linkedin_url: row?.linkedin_url ?? null,
-        website_url: row?.website_url ?? null,
         investing_years_band: row?.investing_years_band ?? null,
         total_investments_made_band: row?.total_investments_made_band ?? null,
       });
@@ -917,7 +916,6 @@ export class OnboardingService {
             primary_contact_name = coalesce(primary_contact_name, (${payload}::jsonb ->> 'primary_contact_name')),
             title_role = coalesce(title_role, (${payload}::jsonb ->> 'title_role')),
             linkedin_url = coalesce(linkedin_url, (${payload}::jsonb ->> 'linkedin_url')),
-            website_url = coalesce(website_url, (${payload}::jsonb ->> 'website_url')),
             investing_years_band = coalesce(investing_years_band, (${payload}::jsonb ->> 'investing_years_band'), (${payload}::jsonb ->> 'investingYears')),
             total_investments_made_band = coalesce(total_investments_made_band, (${payload}::jsonb ->> 'total_investments_made_band'), (${payload}::jsonb ->> 'totalStartupInvestments')),
             notable_exits = coalesce(notable_exits, (${payload}::jsonb ->> 'notable_exits'), (${payload}::jsonb ->> 'notableExits')),
@@ -1155,6 +1153,49 @@ export class OnboardingService {
             completed_at = excluded.completed_at,
             updated_at = excluded.updated_at
         `;
+        
+        if (input.completed === true) {
+          // Mark organization as onboarded
+          await tx.$queryRaw`
+            update public.organizations
+            set onboarding_complete = true, updated_at = timezone('utc', now())
+            where id = ${membership.orgId}::uuid
+          `;
+
+          if (input.role === 'startup') {
+            // Auto-publish the discovery post for startups
+            await tx.$queryRaw`
+              insert into public.startup_posts as sp (
+                startup_org_id,
+                title,
+                summary,
+                stage,
+                status,
+                published_at,
+                created_by,
+                updated_by,
+                updated_at
+              )
+              values (
+                ${membership.orgId}::uuid,
+                coalesce((${payload}::jsonb ->> 'company_name'), (${payload}::jsonb ->> 'legal_name'), 'New Startup'),
+                coalesce((${payload}::jsonb ->> 'elevator_pitch'), 'We are building something exciting.'),
+                coalesce((${payload}::jsonb ->> 'company_stage_band'), 'Idea'),
+                'published'::public.startup_post_status,
+                timezone('utc', now()),
+                ${userId}::uuid,
+                ${userId}::uuid,
+                timezone('utc', now())
+              )
+              on conflict (startup_org_id) do update
+              set
+                status = 'published'::public.startup_post_status,
+                published_at = coalesce(sp.published_at, timezone('utc', now())),
+                updated_by = ${userId}::uuid,
+                updated_at = timezone('utc', now())
+            `;
+          }
+        }
       }
     });
 
@@ -1164,4 +1205,3 @@ export class OnboardingService {
     return this.buildMeView(userId, membership, step1Completed, scores);
   }
 }
-

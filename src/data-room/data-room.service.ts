@@ -40,7 +40,7 @@ export class DataRoomService {
     const v = this.normalizeText(value);
     if (
       !v ||
-      !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
         v,
       )
     ) {
@@ -213,10 +213,20 @@ export class DataRoomService {
       }>
     >`
       select
-        r.id, r.startup_org_id, r.requester_org_id, r.message, r.status::text as status, r.reviewed_at, r.review_note, r.created_at,
+        r.id, r.startup_org_id, r.requester_org_id, r.message, 
+        case
+          when g.id is not null then 'approved'::text
+          else r.status::text
+        end as status,
+        r.reviewed_at, r.review_note, r.created_at,
         o.name as startup_org_name
       from public.data_room_access_requests r
       join public.organizations o on o.id = r.startup_org_id
+      left join public.data_room_access_grants g
+        on g.startup_org_id = r.startup_org_id
+        and g.grantee_org_id = r.requester_org_id
+        and g.revoked_at is null
+        and (g.expires_at is null or g.expires_at > timezone('utc', now()))
       where r.requester_org_id = ${ctx.orgId}::uuid
       order by r.created_at desc
       limit 100
@@ -651,17 +661,16 @@ export class DataRoomService {
 
   private async listStartupFolders(startupOrgId: string): Promise<DataRoomFolderView[]> {
     const rows = await this.prisma.$queryRaw<
-      Array<{ id: string; parent_id: string | null; path: string; name: string; created_at: Date }>
+      Array<{ id: string; parent_id: string | null; name: string; created_at: Date }>
     >`
-      select id, parent_id, path, name, created_at
+      select id, parent_id, name, created_at
       from public.startup_data_room_folders
       where startup_org_id = ${startupOrgId}::uuid
-      order by path asc
+      order by name asc
     `;
     return rows.map((r) => ({
       id: r.id,
       parent_id: r.parent_id,
-      path: r.path,
       name: r.name,
       created_at: r.created_at.toISOString(),
     }));

@@ -37,7 +37,7 @@ export class DealRoomService {
     const v = this.normalizeText(value);
     if (
       !v ||
-      !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
         v,
       )
     ) {
@@ -892,6 +892,36 @@ export class DealRoomService {
       status: r.status,
       updated_at: r.updated_at.toISOString(),
     }));
+  }
+
+  async getAgreement(params: {
+    userId: string;
+    dealRoomId: string;
+    agreementId: string;
+  }): Promise<{ id: string; title: string; status: string; template_key: string | null; content_text: string | null; updated_at: string; signed_by: any }> {
+    await this.assertParticipant(params.userId, params.dealRoomId);
+    const agreementId = this.ensureUuid(params.agreementId, 'Invalid agreement id');
+    
+    const rows = await this.prisma.$queryRaw<
+      Array<{ id: string; title: string; status: string; template_key: string | null; content_text: string | null; updated_at: Date; signed_by: any }>
+    >`
+      select id::text as id, title, status::text as status, template_key, content_text, updated_at, signed_by
+      from public.deal_room_agreements
+      where id = ${agreementId}::uuid and deal_room_id = ${params.dealRoomId}::uuid
+      limit 1
+    `;
+    const r = rows[0];
+    if (!r) throw new Error('Agreement not found');
+    
+    return {
+      id: r.id,
+      title: r.title,
+      status: r.status,
+      template_key: r.template_key,
+      content_text: r.content_text,
+      updated_at: r.updated_at.toISOString(),
+      signed_by: r.signed_by ?? [],
+    };
   }
 
   async listMilestones(params: {
