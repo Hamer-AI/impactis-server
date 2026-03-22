@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  impactis-db:
+    image: postgres:15-alpine
+    container_name: impactis-db
+    restart: always
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: password1
+      POSTGRES_DB: impactis
+    ports:
+      - '5433:5432' # Using 5433 on host because cmc-db-1 is already using 5432
+    volumes:
+      - impactis-pgdata:/var/lib/postgresql/data
+
+volumes:
+  impactis-pgdata:
