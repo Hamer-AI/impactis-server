@@ -4,6 +4,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { ReadinessService } from '../readiness/readiness.service';
 import { UpstashRedisCacheService } from '../cache/upstash-redis-cache.service';
 import { CapabilitiesService } from '../capabilities/capabilities.service';
+import { AiMatchingService } from '../ai/ai-matching.service';
 import {
   CreateStartupDataRoomFolderInput,
   STARTUP_DATA_ROOM_DOCUMENT_TYPES,
@@ -39,6 +40,7 @@ export class StartupsService {
     private readonly cache: UpstashRedisCacheService,
     private readonly config: ConfigService,
     private readonly capabilities: CapabilitiesService,
+    private readonly aiMatching: AiMatchingService,
   ) {}
 
   private normalizeOptionalText(value: string | null | undefined): string | null {
@@ -1621,6 +1623,9 @@ export class StartupsService {
     }
 
     await this.invalidateWorkspaceBootstrapForOrg(membership.orgId);
+    await this.aiMatching.enqueueOrg(membership.orgId);
+    // Trigger immediate processing for this demo/test
+    await this.aiMatching.processNextJob(5).catch(() => {}); 
     return postId;
   }
 }

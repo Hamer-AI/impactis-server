@@ -1021,7 +1021,7 @@ export class OrganizationsService {
       throw new Error('Organization is not active');
     }
 
-    const rows = await this.prisma.$queryRaw<Array<{ id: string }>>`
+    const updatedRows = await this.prisma.$queryRaw<Array<{ id: string; type: string }>>`
       update public.organizations
       set
         name = ${name},
@@ -1030,28 +1030,43 @@ export class OrganizationsService {
         logo_url = ${logoUrl},
         updated_at = timezone('utc', now())
       where id = ${membership.orgId}::uuid
-      returning id
+      returning id::text as id, type::text as type
     `;
+    const updated = updatedRows?.[0] ?? null;
 
-    if (!rows[0]?.id) {
+    if (!updated?.id) {
       throw new Error('Organization membership is required');
     }
 
-    const orgId = rows[0].id;
-    await this.invalidateWorkspaceBootstrapForOrg(orgId);
-    return orgId;
+    // Sync to discovery post if it exists and this is a startup
+    if (updated.type === 'startup') {
+      await this.prisma.$queryRaw`
+        update public.startup_posts
+        set
+          location = coalesce(${location}, location),
+          industry_tags = case
+            when array_length(${industryTags}::text[], 1) > 0 then ${industryTags}::text[]
+            else industry_tags
+          end,
+          updated_at = timezone('utc', now())
+        where startup_org_id = ${updated.id}::uuid
+      `;
+    }
+
+    await this.invalidateWorkspaceBootstrapForOrg(updated.id);
+    return updated.id;
   }
 
   async createOrganizationInvite(
     userId: string,
     input: CreateOrganizationInviteInput,
   ): Promise<CreateOrganizationInvitePayload> {
-    const invitedEmail = this.normalizeOptionalText(input.invitedEmail)?.toLowerCase() ?? '';
+    const invitedEmail = this.normalizeOptionalText(input.invitedEmail);
+    const memberRole = (input.memberRole ?? 'member').trim().toLowerCase();
     if (!invitedEmail) {
       throw new Error('Invited email is required');
     }
 
-    const memberRole = (input.memberRole ?? 'member').trim().toLowerCase();
     if (memberRole !== 'admin' && memberRole !== 'member') {
       throw new Error('Invited member role must be admin or member');
     }
@@ -1155,9 +1170,10 @@ export class OrganizationsService {
 
     // 2. In-app Notification (if user exists)
     try {
+      const normalizedInvitedEmail = invitedEmail.trim().toLowerCase();
       const invitedUserRows = await this.prisma.$queryRaw<Array<{ id: string }>>`
         select id from public.users
-        where lower(trim(email)) = ${invitedEmail}
+        where lower(trim(email)) = ${normalizedInvitedEmail}
         limit 1
       `;
       const invitedUserId = invitedUserRows[0]?.id;

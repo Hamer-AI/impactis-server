@@ -1,8 +1,9 @@
-import { Body, Controller, Get, Patch, Post, Query, Req, UseGuards, VERSION_NEUTRAL, Param } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Query, Req, UseGuards, VERSION_NEUTRAL } from '@nestjs/common';
 import { BetterAuthJwtGuard } from '../auth-integration/better-auth-jwt.guard';
 import { AuthenticatedUser } from '../auth-integration/auth-integration.service';
 import { AdminGuard } from '../common/guards/admin.guard';
 import { AdminService } from './admin.service';
+import { PrismaService } from '../prisma/prisma.service';
 import type {
   AdminAuditLogView,
   AdminDealRoomView,
@@ -26,7 +27,10 @@ interface RequestWithUser {
 @Controller({ path: 'admin', version: ['1', VERSION_NEUTRAL] })
 @UseGuards(BetterAuthJwtGuard, AdminGuard)
 export class AdminController {
-  constructor(private readonly admin: AdminService) {}
+  constructor(
+    private readonly admin: AdminService,
+    private readonly prisma: PrismaService,
+  ) {}
 
   @Get('me')
   async me(@Req() req: RequestWithUser): Promise<AdminMeView | { error: string }> {
@@ -227,6 +231,52 @@ export class AdminController {
   async audit(@Query('limit') limitRaw?: string): Promise<AdminAuditLogView[]> {
     const limit = typeof limitRaw === 'string' ? Number.parseInt(limitRaw, 10) : 200;
     return this.admin.listAuditLogs(Number.isFinite(limit) ? limit : 200);
+  }
+
+  @Get('analytics/ai-matches')
+  async aiMatchAnalytics(): Promise<Array<{ from_org_id: string; to_org_id: string; overall_score: number; match_reasons: string[] }>> {
+    try {
+      const rows = await this.prisma.$queryRaw<
+        Array<{ from_org_id: string; to_org_id: string; overall_score: number; match_reasons: string[] | null }>
+      >`
+        select from_org_id::text as from_org_id, to_org_id::text as to_org_id,
+          overall_score::int as overall_score, match_reasons
+        from public.ai_match_scores
+        where disqualified = false
+        order by overall_score desc
+        limit 100
+      `;
+      return (rows ?? []).map((r) => ({
+        from_org_id: r.from_org_id,
+        to_org_id: r.to_org_id,
+        overall_score: Math.max(0, Math.min(100, Number(r.overall_score ?? 0))),
+        match_reasons: Array.isArray(r.match_reasons) ? r.match_reasons : [],
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  @Get('analytics/discovery-stats')
+  async discoveryStats(): Promise<any> {
+    try {
+      const profileViews = await this.prisma.$queryRaw<Array<{ total_views: number }>>`
+        select count(*)::int as total_views from public.discovery_profile_views
+      `;
+      const connectionRequests = await this.prisma.$queryRaw<Array<{ total_requests: number }>>`
+        select count(*)::int as total_requests from public.connection_requests
+      `;
+      const activeConnections = await this.prisma.$queryRaw<Array<{ total_connections: number }>>`
+        select count(*)::int as total_connections from public.connections where status = 'active'
+      `;
+      return {
+        total_profile_views: profileViews[0]?.total_views ?? 0,
+        total_connection_requests: connectionRequests[0]?.total_requests ?? 0,
+        total_active_connections: activeConnections[0]?.total_connections ?? 0,
+      };
+    } catch {
+      return { total_profile_views: 0, total_connection_requests: 0, total_active_connections: 0 };
+    }
   }
 }
 

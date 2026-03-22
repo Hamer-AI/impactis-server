@@ -97,12 +97,16 @@ export class StartupsController {
   ): Promise<StartupDataRoomDocumentView[]> {
     const user = req.user;
     if (!user) {
+      console.error('[DataRoom] No user in request');
       return [];
     }
 
     try {
-      return await this.startups.listStartupDataRoomDocuments(user.id);
-    } catch {
+      const docs = await this.startups.listStartupDataRoomDocuments(user.id);
+      console.log(`[DataRoom] Retrieved ${docs.length} documents for user ${user.id}`);
+      return docs;
+    } catch (error) {
+      console.error('[DataRoom] Failed to list documents:', error instanceof Error ? error.message : error);
       return [];
     }
   }

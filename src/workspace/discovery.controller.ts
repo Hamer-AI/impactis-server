@@ -174,16 +174,21 @@ export class DiscoveryController {
     }
   }
 
-  // v3: list AI matches (demo: uses existing ai_match_scores table; free returns empty)
+  // v3: list AI matches (admin-only feature for AI analytics)
   @Get('matches')
   @UseGuards(DiscoveryReadinessGuard)
   async matches(@Req() req: RequestWithUser): Promise<Array<{ to_org_id: string; overall_score: number; reasons: string[] }>> {
     const user = req.user;
     if (!user) return [];
     try {
-      const me = await this.billing.getBillingMeForUser(user.id);
-      const planCode = (me?.plan.code ?? 'free').toLowerCase();
-      if (planCode === 'free') return [];
+      // Admin-only check
+      const adminRows = await this.prisma.$queryRaw<Array<{ is_active: boolean }>>`
+        select is_active from public.admin_users where user_id = ${user.id}::uuid limit 1
+      `;
+      const isAdmin = adminRows[0]?.is_active === true;
+      if (!isAdmin) {
+        return [];
+      }
 
       const identity = await this.workspace.getWorkspaceIdentityForUser(user.id);
       const orgId = identity?.membership?.org_id;

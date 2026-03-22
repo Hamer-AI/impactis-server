@@ -1,10 +1,11 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 
 type OrgType = 'startup' | 'investor' | 'advisor';
 
 @Injectable()
 export class AiMatchingService {
+  private readonly logger = new Logger(AiMatchingService.name);
   constructor(private readonly prisma: PrismaService) {}
 
   private norm(value: string | null | undefined): string | null {
@@ -97,6 +98,8 @@ export class AiMatchingService {
         let embeddingVectorJson = '[]';
         let embeddingModel = 'heuristic-v3';
         const openaiKey = process.env.OPENAI_API_KEY?.trim();
+        const geminiKey = process.env.GEMINI_API_KEY?.trim();
+
         if (openaiKey) {
           try {
             const embRes = await fetch('https://api.openai.com/v1/embeddings', {
@@ -119,8 +122,30 @@ export class AiMatchingService {
               embeddingVectorJson = JSON.stringify(vec);
               embeddingModel = process.env.OPENAI_EMBEDDING_MODEL?.trim() || 'text-embedding-3-small';
             }
-          } catch {
-            // Keep heuristic-only row if OpenAI fails
+          } catch (e: any) {
+            this.logger.warn(`OpenAI embedding failed: ${e.message}`);
+          }
+        } else if (geminiKey) {
+          try {
+            const embRes = await fetch(
+              `https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key=${geminiKey}`,
+              {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  model: 'models/text-embedding-004',
+                  content: { parts: [{ text: embeddingText.slice(0, 8000) }] },
+                }),
+              },
+            );
+            const embJson = await embRes.json();
+            const vec = embJson?.embedding?.values;
+            if (Array.isArray(vec) && vec.length > 0) {
+              embeddingVectorJson = JSON.stringify(vec);
+              embeddingModel = 'gemini-text-embedding-004';
+            }
+          } catch (e: any) {
+            this.logger.warn(`Gemini embedding failed: ${e.message}`);
           }
         }
 
