@@ -23,7 +23,7 @@ export class SessionsService {
     async revokeSession(userId: string, sessionId: string): Promise<DeleteResult> {
         try {
             const rows = await this.prisma.$queryRaw<{ id: string }[]>(
-                `DELETE FROM auth.sessions WHERE id = $1 AND user_id = $2 RETURNING id`,
+                `DELETE FROM public.sessions WHERE id = $1 AND user_id = $2 RETURNING id`,
                 sessionId,
                 userId,
             );
@@ -41,7 +41,7 @@ export class SessionsService {
     async revokeOtherSessions(userId: string, currentSessionId: string): Promise<DeleteResult> {
         try {
             const rows = await this.prisma.$queryRaw<{ id: string }[]>(
-                `DELETE FROM auth.sessions WHERE user_id = $1 AND id != $2 RETURNING id`,
+                `DELETE FROM public.sessions WHERE user_id = $1 AND id != $2 RETURNING id`,
                 userId,
                 currentSessionId,
             );

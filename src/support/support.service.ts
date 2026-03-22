@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { AiEnhancementService } from '../ai/ai-enhancement.service';
 import type {
   AddSupportMessageInput,
   AiChatSessionView,
@@ -14,7 +15,10 @@ type MembershipContext = { orgId: string | null };
 
 @Injectable()
 export class SupportService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly aiEnhancement: AiEnhancementService,
+  ) {}
 
   private normalizeText(value: string | null | undefined): string | null {
     if (typeof value !== 'string') return null;
@@ -186,28 +190,61 @@ export class SupportService {
   async sendHelpBotMessage(userId: string, input: CreateAiChatMessageInput): Promise<{ session: AiChatSessionView; reply: string }> {
     const ctx = this.normalizeText(input.context ?? null);
     const msg = this.normalizeText(input.message);
+    const sid = this.normalizeText(input.sessionId ?? null);
     if (!msg) throw new Error('Message is required');
 
-    // Minimal bot: deterministic canned reply; later replace with GPT + knowledge base.
-    const reply = 'Thanks — our support bot is in demo mode. Please describe the issue and we can escalate to a human agent if needed.';
+    let history: { role: string; content: string }[] = [];
+    let existingSession: any = null;
 
-    const sessionRows = await this.prisma.$queryRaw<
-      Array<{ id: string; context: string | null; messages: unknown; escalated: boolean; ticket_id: string | null; created_at: Date; updated_at: Date }>
-    >`
-      insert into public.ai_chat_sessions (user_id, context, messages, escalated)
-      values (
-        ${userId}::uuid,
-        ${ctx},
-        jsonb_build_array(
-          jsonb_build_object('role','user','content',${msg},'created_at',timezone('utc', now())),
-          jsonb_build_object('role','assistant','content',${reply},'created_at',timezone('utc', now()))
-        ),
-        false
-      )
-      returning id::text as id, context, messages, escalated, ticket_id::text as ticket_id, created_at, updated_at
-    `;
-    const s = sessionRows[0];
-    if (!s) throw new Error('Failed to create chat session');
+    if (sid) {
+      const resp = await this.prisma.$queryRaw<Array<{ id: string; messages: any; escalated: boolean }>>`
+        select id::text as id, messages, escalated
+        from public.ai_chat_sessions
+        where id = ${sid}::uuid and user_id = ${userId}::uuid
+        limit 1
+      `;
+      existingSession = resp[0];
+      if (existingSession) {
+        history = Array.isArray(existingSession.messages) ? existingSession.messages : [];
+      }
+    }
+
+    const reply = await this.aiEnhancement.generateSupportReply(msg, history);
+
+    const newMessages = [
+      ...history,
+      { role: 'user', content: msg, created_at: new Date().toISOString() },
+      { role: 'assistant', content: reply, created_at: new Date().toISOString() },
+    ];
+
+    let s: any;
+    if (existingSession) {
+      const updated = await this.prisma.$queryRaw<
+        Array<{ id: string; context: string | null; messages: unknown; escalated: boolean; ticket_id: string | null; created_at: Date; updated_at: Date }>
+      >`
+        update public.ai_chat_sessions
+        set messages = ${JSON.stringify(newMessages)}::jsonb, updated_at = timezone('utc', now())
+        where id = ${existingSession.id}::uuid
+        returning id::text as id, context, messages, escalated, ticket_id::text as ticket_id, created_at, updated_at
+      `;
+      s = updated[0];
+    } else {
+      const created = await this.prisma.$queryRaw<
+        Array<{ id: string; context: string | null; messages: unknown; escalated: boolean; ticket_id: string | null; created_at: Date; updated_at: Date }>
+      >`
+        insert into public.ai_chat_sessions (user_id, context, messages, escalated)
+        values (
+          ${userId}::uuid,
+          ${ctx},
+          ${JSON.stringify(newMessages)}::jsonb,
+          false
+        )
+        returning id::text as id, context, messages, escalated, ticket_id::text as ticket_id, created_at, updated_at
+      `;
+      s = created[0];
+    }
+
+    if (!s) throw new Error('Failed to save chat session');
 
     return {
       session: {

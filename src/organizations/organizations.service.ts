@@ -1,7 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { createHash, randomBytes } from 'node:crypto';
+import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { UpstashRedisCacheService } from '../cache/upstash-redis-cache.service';
+import { MailerService } from '../mailer/mailer.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import {
   CreateOrganizationInviteInput,
   CreateOrganizationInvitePayload,
@@ -30,6 +33,9 @@ export class OrganizationsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly cache: UpstashRedisCacheService,
+    private readonly mailer: MailerService,
+    private readonly notifications: NotificationsService,
+    private readonly config: ConfigService,
   ) {}
 
   private normalizeOptionalText(value: string | null | undefined): string | null {
@@ -189,7 +195,7 @@ export class OrganizationsService {
   private async resolveUserEmail(userId: string): Promise<string> {
     const rows = await this.prisma.$queryRaw<Array<{ email: string | null }>>`
       select lower(trim(coalesce(u.email, ''))) as email
-      from auth.users u
+      from public.users u
       where u.id = ${userId}::uuid
       limit 1
     `;
@@ -1070,7 +1076,7 @@ export class OrganizationsService {
 
     const existingMemberRows = await this.prisma.$queryRaw<Array<{ exists: boolean }>>`
       select true as exists
-      from auth.users u
+      from public.users u
       join public.org_members om on om.user_id = u.id
       where om.org_id = ${membership.orgId}::uuid
         and om.status = 'active'
@@ -1123,9 +1129,53 @@ export class OrganizationsService {
 
     await this.invalidateWorkspaceBootstrapForOrg(membership.orgId);
 
+    // --- NOTIFICATION LOGIC ---
+    const appUrl = this.config.get<string>('WEB_ORIGIN') || 'http://localhost:3000';
+    const inviteLink = `${appUrl}/invite?token=${inviteToken}`;
+
+    // 1. Send Email (SMTP)
+    await this.mailer.send({
+      to: invitedEmail,
+      subject: 'You have been invited to join an organization on Impactis',
+      html: `
+        <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #eee; border-radius: 8px;">
+          <h2 style="color: #10b981;">Impactis Platform Invitation</h2>
+          <p>Hello,</p>
+          <p>You have been invited to join an organization on the Impactis platform as a <strong>${memberRole}</strong>.</p>
+          <p style="margin: 30px 0;">
+            <a href="${inviteLink}" style="background-color: #10b981; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold;">Accept Invitation</a>
+          </p>
+          <p style="font-size: 12px; color: #666;">If the button above doesn't work, copy and paste this link into your browser:</p>
+          <p style="font-size: 12px; color: #10b981; word-break: break-all;">${inviteLink}</p>
+          <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;" />
+          <p style="font-size: 12px; color: #999;">This invitation link will expire in 7 days.</p>
+        </div>
+      `,
+    });
+
+    // 2. In-app Notification (if user exists)
+    try {
+      const invitedUserRows = await this.prisma.$queryRaw<Array<{ id: string }>>`
+        select id from public.users
+        where lower(trim(email)) = ${invitedEmail}
+        limit 1
+      `;
+      const invitedUserId = invitedUserRows[0]?.id;
+      if (invitedUserId) {
+        await this.notifications.createForUser(invitedUserId, {
+          type: 'org_invite',
+          title: 'Organization Invitation',
+          body: `You have been invited to join an organization as a ${memberRole}. Click to accept.`,
+          link: inviteLink,
+        });
+      }
+    } catch (err) {
+      this.logger.error('Failed to send in-app notification for invite', err);
+    }
+
     return {
       success: true,
-      message: null,
+      message: 'Invite sent successfully via email.',
       inviteId,
       inviteToken,
     };

@@ -11,6 +11,7 @@ import {
   SyndicateInviteView,
   SyndicateView,
   UpdateSyndicateStatusInput,
+  CommitToSyndicateInput,
 } from './syndicates.types';
 
 interface RequestWithUser {
@@ -123,6 +124,22 @@ export class SyndicatesController {
       return await this.syndicates.updateStatus(user.id, syndicateId, input);
     } catch (e) {
       return { error: e instanceof Error ? e.message : 'Failed to update status' };
+    }
+  }
+
+  @Post(':syndicateId/commit')
+  @UseGuards(ReadinessGuard)
+  async commitAmount(
+    @Req() req: RequestWithUser,
+    @Param('syndicateId') syndicateId: string,
+    @Body() input: CommitToSyndicateInput,
+  ): Promise<{ success: boolean } | { error: string }> {
+    const user = req.user;
+    if (!user) return { error: 'Unauthorized' };
+    try {
+      return await this.syndicates.commitAmount(user.id, syndicateId, input);
+    } catch (e) {
+      return { error: e instanceof Error ? e.message : 'Failed to commit amount' };
     }
   }
 }

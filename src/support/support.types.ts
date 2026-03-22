@@ -32,6 +32,12 @@ export class CreateAiChatMessageInput {
 
   @IsOptional()
   @IsString()
+  @MinLength(36)
+  @MaxLength(36)
+  sessionId?: string | null;
+
+  @IsOptional()
+  @IsString()
   @MaxLength(32)
   context?: string | null; // help | deal_room | data_room | matching
 }

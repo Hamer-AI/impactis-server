@@ -1,4 +1,4 @@
-import { IsOptional, IsString, MaxLength, MinLength , Matches } from 'class-validator';
+import { IsOptional, IsString, MaxLength, MinLength , Matches, IsNumber, Min } from 'class-validator';
 
 export type SyndicateStatus = 'forming' | 'active' | 'closed' | 'cancelled';
 export type SyndicateMemberStatus = 'invited' | 'confirmed' | 'declined' | 'withdrew';
@@ -35,6 +35,12 @@ export class UpdateSyndicateStatusInput {
   @MinLength(3)
   @MaxLength(32)
   status!: SyndicateStatus;
+}
+
+export class CommitToSyndicateInput {
+  @IsNumber()
+  @Min(0)
+  amountUsd!: number;
 }
 
 export type SyndicateView = {

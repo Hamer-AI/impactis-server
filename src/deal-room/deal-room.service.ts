@@ -861,15 +861,130 @@ export class DealRoomService {
     return { success: true };
   }
 
-  async aiAnalyze(params: { userId: string; dealRoomId: string }): Promise<{ summary: string; risks: string[]; milestones: Array<{ title: string; description: string; due_date: string }>; investor_fit_score: number }> {
+  async aiAnalyze(params: { userId: string; dealRoomId: string }): Promise<{
+    ai_summary: string | null;
+    ai_risk_flags: string[];
+    analyzed_at: string;
+    summary?: string;
+    risks?: string[];
+  }> {
     await this.assertParticipant(params.userId, params.dealRoomId);
-    // Demo placeholder — later replace with actual LLM pipeline.
-    return {
-      summary: 'AI analysis is in demo mode. Enable LLM integration to generate summaries and risk flags.',
-      risks: [],
-      milestones: [],
-      investor_fit_score: 0,
-    };
+
+    const apiKey = process.env.GEMINI_API_KEY;
+    const analyzedAt = new Date().toISOString();
+
+    if (!apiKey) {
+      return {
+        ai_summary: 'AI analysis is not configured. Please set the GEMINI_API_KEY environment variable.',
+        ai_risk_flags: [],
+        analyzed_at: analyzedAt,
+      };
+    }
+
+    // Gather deal room context
+    const messages = await this.prisma.$queryRaw<Array<{ body: string; sender_email: string | null; created_at: Date }>>`
+      select m.body, u.email as sender_email, m.created_at
+      from public.deal_room_messages m
+      join public.users u on u.id = m.sender_user_id
+      where m.deal_room_id = ${params.dealRoomId}::uuid
+      order by m.created_at asc
+      limit 50
+    `;
+
+    const agreements = await this.prisma.$queryRaw<Array<{ title: string; status: string }>>`
+      select title, status::text as status
+      from public.deal_room_agreements
+      where deal_room_id = ${params.dealRoomId}::uuid
+      order by created_at desc
+      limit 20
+    `;
+
+    const milestones = await this.prisma.$queryRaw<Array<{ title: string; completed_at: Date | null }>>`
+      select title, completed_at
+      from public.deal_room_milestones
+      where deal_room_id = ${params.dealRoomId}::uuid
+      order by created_at asc
+      limit 20
+    `;
+
+    const roomRows = await this.prisma.$queryRaw<Array<{ stage: string; name: string | null }>>`
+      select stage::text as stage, name
+      from public.deal_rooms
+      where id = ${params.dealRoomId}::uuid
+      limit 1
+    `;
+    const room = roomRows[0];
+
+    const chatHistory = messages.map(m =>
+      `[${m.sender_email ?? 'Unknown'}]: ${m.body}`
+    ).join('\n');
+
+    const agreementSummary = agreements.map(a =>
+      `- ${a.title} (${a.status})`
+    ).join('\n') || 'None';
+
+    const milestoneSummary = milestones.map(m =>
+      `- ${m.title} [${m.completed_at ? 'Completed' : 'Pending'}]`
+    ).join('\n') || 'None';
+
+    const prompt = `You are an expert investment analyst reviewing a deal room conversation between a startup and an investor on the Impactis platform.
+
+Deal Stage: ${room?.stage?.replace(/_/g, ' ') ?? 'unknown'}
+Deal Name: ${room?.name ?? 'Unnamed Deal'}
+
+=== CHAT MESSAGES ===
+${chatHistory || '(No messages yet)'}
+
+=== AGREEMENTS ===
+${agreementSummary}
+
+=== MILESTONES ===
+${milestoneSummary}
+
+Based on this information, provide:
+1. A concise deal summary (2-4 sentences) covering progress and key discussion points.
+2. A list of 2-5 specific risk flags or concerns (each as a short sentence).
+
+Respond ONLY in this exact JSON format (no markdown, no code blocks):
+{
+  "summary": "...",
+  "risk_flags": ["...", "..."]
+}`;
+
+    try {
+      const { GoogleGenerativeAI } = await import('@google/generative-ai');
+      const genAI = new GoogleGenerativeAI(apiKey);
+      const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+
+      const result = await model.generateContent(prompt);
+      const text = result.response.text().trim();
+
+      let parsed: { summary?: string; risk_flags?: string[] };
+      try {
+        const cleaned = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+        parsed = JSON.parse(cleaned);
+      } catch {
+        return {
+          ai_summary: text,
+          ai_risk_flags: [],
+          analyzed_at: analyzedAt,
+        };
+      }
+
+      return {
+        ai_summary: parsed.summary ?? null,
+        ai_risk_flags: Array.isArray(parsed.risk_flags) ? parsed.risk_flags : [],
+        analyzed_at: analyzedAt,
+      };
+
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'AI analysis failed';
+      return {
+        ai_summary: `Analysis failed: ${msg}`,
+        ai_risk_flags: [],
+        analyzed_at: analyzedAt,
+      };
+    }
   }
 
   async listAgreements(params: {

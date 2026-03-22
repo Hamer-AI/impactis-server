@@ -9,6 +9,7 @@ import type {
   SyndicateStatus,
   SyndicateView,
   UpdateSyndicateStatusInput,
+  CommitToSyndicateInput,
 } from './syndicates.types';
 
 type MembershipContext = { orgId: string; orgType: 'startup' | 'investor' | 'advisor'; memberRole: 'owner' | 'admin' | 'member' };
@@ -362,6 +363,35 @@ export class SyndicatesService {
       set status = ${normalized}::public.syndicate_status, updated_at = timezone('utc', now())
       where id = ${id}::uuid
     `;
+    return { success: true };
+  }
+
+  async commitAmount(userId: string, syndicateId: string, input: CommitToSyndicateInput): Promise<{ success: boolean }> {
+    const ctx = await this.getRequesterContext(userId);
+    await this.assertElite(ctx.orgId);
+    const id = this.ensureUuid(syndicateId, 'Invalid syndicate id');
+
+    if (typeof input.amountUsd !== 'number' || input.amountUsd < 0) {
+      throw new Error('Invalid commitment amount');
+    }
+
+    const memberRows = await this.prisma.$queryRaw<Array<{ status: string }>>`
+      select status::text as status
+      from public.syndicate_members
+      where syndicate_id = ${id}::uuid and org_id = ${ctx.orgId}::uuid
+      limit 1
+    `;
+    const member = memberRows[0];
+    if (!member) {
+      throw new ForbiddenException({ code: 'SYNDICATE_PERMISSION_DENIED', message: 'You are not a member of this syndicate.' });
+    }
+    
+    await this.prisma.$queryRaw`
+      update public.syndicate_members
+      set committed_usd = ${input.amountUsd}, status = 'confirmed'::public.syndicate_member_status
+      where syndicate_id = ${id}::uuid and org_id = ${ctx.orgId}::uuid
+    `;
+    
     return { success: true };
   }
 }
